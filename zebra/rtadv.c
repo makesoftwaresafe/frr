@@ -47,14 +47,6 @@ DEFINE_MTYPE_STATIC(ZEBRA, ADV_IF, "Advertised Interface");
 #include <netinet/icmp6.h>
 #endif
 
-/* If RFC2133 definition is used. */
-#ifndef IPV6_JOIN_GROUP
-#define IPV6_JOIN_GROUP  IPV6_ADD_MEMBERSHIP
-#endif
-#ifndef IPV6_LEAVE_GROUP
-#define IPV6_LEAVE_GROUP IPV6_DROP_MEMBERSHIP
-#endif
-
 #define ALLNODE   "ff02::1"
 #define ALLROUTER "ff02::2"
 
@@ -184,13 +176,13 @@ static int rtadv_recv_packet(struct zebra_vrf *zvrf, int sock, uint8_t *buf,
 static void rtadv_send_packet(int sock, struct interface *ifp,
 			      enum ipv6_nd_suppress_ra_status stop)
 {
-	struct msghdr msg;
-	struct iovec iov;
+	struct msghdr msg = { 0 };
+	struct iovec iov = { 0 };
 	struct cmsghdr *cmsgptr;
 	struct in6_pktinfo *pkt;
-	struct sockaddr_in6 addr;
-	unsigned char buf[RTADV_MSG_SIZE];
-	char adata[RTADV_ADATA_SIZE];
+	struct sockaddr_in6 addr = { 0 };
+	unsigned char buf[RTADV_MSG_SIZE] = { 0 };
+	char adata[RTADV_ADATA_SIZE] = { 0 };
 
 	struct nd_router_advert *rtadv;
 	int ret;
@@ -1960,7 +1952,7 @@ uint32_t rtadv_get_interfaces_configured_from_bgp(void)
 void rtadv_init(void)
 {
 	if (CMSG_SPACE(sizeof(struct in6_pktinfo)) > RTADV_ADATA_SIZE) {
-		zlog_debug("%s: RTADV_ADATA_SIZE choosen will not work on this platform, please use a larger size",
+		zlog_debug("%s: RTADV_ADATA_SIZE chosen will not work on this platform, please use a larger size",
 			   __func__);
 
 		exit(-1);

@@ -10,6 +10,7 @@
 #include "lib/version.h"
 #include "routemap.h"
 #include "filter.h"
+#include "keychain.h"
 #include "libfrr.h"
 #include "frr_pthread.h"
 #include "mgmtd/mgmt.h"
@@ -158,6 +159,12 @@ const struct frr_yang_module_info ietf_netconf_with_defaults_info = {
  * clients into mgmtd. The modules are used by libyang in order to support
  * parsing binary data returns from the backend.
  */
+const struct frr_yang_module_info frr_backend_client_info = {
+	.name = "frr-backend",
+	.ignore_cfg_cbs = true,
+	.nodes = { { .xpath = NULL } },
+};
+
 const struct frr_yang_module_info zebra_route_map_info = {
 	.name = "frr-zebra-route-map",
 	.ignore_cfg_cbs = true,
@@ -182,9 +189,12 @@ static const struct frr_yang_module_info *const mgmt_yang_modules[] = {
 	/*
 	 * YANG module info used by backend clients get added here.
 	 */
+	&frr_backend_client_info,
 
 	&frr_zebra_cli_info,
 	&zebra_route_map_info,
+	&ietf_key_chain_cli_info,
+	&ietf_key_chain_deviation_info,
 
 #ifdef HAVE_RIPD
 	&frr_ripd_cli_info,
@@ -199,20 +209,20 @@ static const struct frr_yang_module_info *const mgmt_yang_modules[] = {
 
 /* clang-format off */
 FRR_DAEMON_INFO(mgmtd, MGMTD,
-	.vty_port = MGMTD_VTY_PORT,
-	.proghelp = "FRR Management Daemon.",
+		.vty_port = MGMTD_VTY_PORT,
+		.proghelp = "FRR Management Daemon.",
 
-	.signals = mgmt_signals,
-	.n_signals = array_size(mgmt_signals),
+		.signals = mgmt_signals,
+		.n_signals = array_size(mgmt_signals),
 
-	.privs = &mgmt_privs,
+		.privs = &mgmt_privs,
 
-	.yang_modules = mgmt_yang_modules,
-	.n_yang_modules = array_size(mgmt_yang_modules),
+		.yang_modules = mgmt_yang_modules,
+		.n_yang_modules = array_size(mgmt_yang_modules),
 
-	/* avoid libfrr trying to read our config file for us */
-	.flags = FRR_MANUAL_VTY_START | FRR_NO_SPLIT_CONFIG,
-);
+		/* avoid libfrr trying to read our config file for us */
+		.flags = FRR_MANUAL_VTY_START | FRR_NO_SPLIT_CONFIG | FRR_LOAD_YANG_LIBRARY,
+	);
 /* clang-format on */
 
 #define DEPRECATED_OPTIONS ""
@@ -228,10 +238,9 @@ int main(int argc, char **argv)
 	int buffer_size = MGMTD_SOCKET_BUF_SIZE;
 
 	frr_preinit(&mgmtd_di, argc, argv);
-	frr_opt_add(
-		"s:n" DEPRECATED_OPTIONS, longopts,
-		"  -s, --socket_size  Set MGMTD peer socket send buffer size\n"
-		"  -n, --vrfwnetns    Use NetNS as VRF backend\n");
+	frr_opt_add("s:n" DEPRECATED_OPTIONS, longopts,
+		    "  -s, --socket_size  Set MGMTD peer socket send buffer size\n"
+		    "  -n, --vrfwnetns    Use NetNS as VRF backend (deprecated, use -w)\n");
 
 	/* Command line argument treatment. */
 	while (1) {
@@ -254,6 +263,8 @@ int main(int argc, char **argv)
 			buffer_size = atoi(optarg);
 			break;
 		case 'n':
+			fprintf(stderr,
+				"The -n option is deprecated, please use global -w option instead.\n");
 			vrf_configure_backend(VRF_BACKEND_NETNS);
 			break;
 		default:

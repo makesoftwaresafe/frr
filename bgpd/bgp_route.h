@@ -59,20 +59,15 @@ enum bgp_show_adj_route_type {
 
 #define BGP_SHOW_SCODE_HEADER                                                  \
 	"Status codes:  s suppressed, d damped, "                              \
-	"h history, * valid, > best, = multipath,\n"                           \
+	"h history, u unsorted, * valid, > best, = multipath,\n"               \
 	"               i internal, r RIB-failure, S Stale, R Removed\n"
 #define BGP_SHOW_OCODE_HEADER                                                  \
 	"Origin codes:  i - IGP, e - EGP, ? - incomplete\n"
 #define BGP_SHOW_NCODE_HEADER "Nexthop codes: @NNN nexthop's vrf id, < announce-nh-self\n"
 #define BGP_SHOW_RPKI_HEADER                                                   \
 	"RPKI validation codes: V valid, I invalid, N Not found\n\n"
-#define BGP_SHOW_HEADER "    Network          Next Hop            Metric LocPrf Weight Path\n"
-#define BGP_SHOW_HEADER_WIDE "    Network                                      Next Hop                                  Metric LocPrf Weight Path\n"
-
-/* Maximum number of labels we can process or send with a prefix. We
- * really do only 1 for MPLS (BGP-LU) but we can do 2 for EVPN-VxLAN.
- */
-#define BGP_MAX_LABELS 2
+#define BGP_SHOW_HEADER "     Network          Next Hop            Metric LocPrf Weight Path\n"
+#define BGP_SHOW_HEADER_WIDE "     Network                                      Next Hop                                  Metric LocPrf Weight Path\n"
 
 /* Maximum number of sids we can process or send with a prefix. */
 #define BGP_MAX_SIDS 6
@@ -237,8 +232,7 @@ struct bgp_path_info_extra {
 	uint32_t igpmetric;
 
 	/* MPLS label(s) - VNI(s) for EVPN-VxLAN  */
-	mpls_label_t label[BGP_MAX_LABELS];
-	uint32_t num_labels;
+	struct bgp_labels *labels;
 
 	/* timestamp of the rib installation */
 	time_t bgp_rib_uptime;
@@ -290,6 +284,9 @@ struct bgp_path_info {
 	/* Peer structure.  */
 	struct peer *peer;
 
+	/* From peer structure */
+	struct peer *from;
+
 	/* Attribute structure.  */
 	struct attr *attr;
 
@@ -319,6 +316,11 @@ struct bgp_path_info {
 #define BGP_PATH_STALE (1 << 8)
 #define BGP_PATH_REMOVED (1 << 9)
 #define BGP_PATH_COUNTED (1 << 10)
+/*
+ * A BGP_PATH_MULTIPATH flag is not set on the best path
+ * it is set on every other node that is part of ECMP
+ * for that particular dest
+ */
 #define BGP_PATH_MULTIPATH (1 << 11)
 #define BGP_PATH_MULTIPATH_CHG (1 << 12)
 #define BGP_PATH_RIB_ATTR_CHG (1 << 13)
@@ -327,6 +329,16 @@ struct bgp_path_info {
 #define BGP_PATH_ACCEPT_OWN (1 << 16)
 #define BGP_PATH_MPLSVPN_LABEL_NH (1 << 17)
 #define BGP_PATH_MPLSVPN_NH_LABEL_BIND (1 << 18)
+#define BGP_PATH_UNSORTED (1 << 19)
+/*
+ * BGP_PATH_MULTIPATH_NEW is set on those bgp_path_info
+ * nodes that we have decided should possibly be in the
+ * ecmp path for a particular dest.  This flag is
+ * removed when the bgp_path_info's are looked at to
+ * decide on whether or not a bgp_path_info is on
+ * the actual ecmp path.
+ */
+#define BGP_PATH_MULTIPATH_NEW (1 << 20)
 
 	/* BGP route type.  This can be static, RIP, OSPF, BGP etc.  */
 	uint8_t type;
@@ -344,6 +356,8 @@ struct bgp_path_info {
 #define BGP_ROUTE_IMPORTED     5        /* from another bgp instance/safi */
 
 	unsigned short instance;
+
+	enum bgp_path_selection_reason reason;
 
 	/* Addpath identifiers */
 	uint32_t addpath_rx_id;
@@ -435,7 +449,6 @@ struct bgp_aggregate {
 	struct {
 		char *name;
 		struct route_map *map;
-		bool changed;
 	} rmap;
 
 	/* Suppress-count. */
@@ -478,9 +491,6 @@ struct bgp_aggregate {
 
 	/* Aggregate route's as-path. */
 	struct aspath *aspath;
-
-	/* SAFI configuration. */
-	safi_t safi;
 
 	/** MED value found in current group. */
 	uint32_t med_matched_value;
@@ -564,10 +574,51 @@ struct bgp_aggregate {
 /* path PREFIX (addpath rxid NUMBER) */
 #define PATH_ADDPATH_STR_BUFFER PREFIX2STR_BUFFER + 32
 
+#define BGP_PATH_INFO_NUM_LABELS(pi)                                           \
+	((pi) && (pi)->extra && (pi)->extra->labels                            \
+		 ? (pi)->extra->labels->num_labels                             \
+		 : 0)
+
 enum bgp_path_type {
 	BGP_PATH_SHOW_ALL,
 	BGP_PATH_SHOW_BESTPATH,
 	BGP_PATH_SHOW_MULTIPATH
+};
+
+/* meta-queue structure:
+ * sub-queue 0: soo routes
+ * sub-queue 1: other routes
+ */
+#define MQ_SIZE 3
+
+/* For checking that an object has already queued in some sub-queue */
+#define MQ_BIT_MASK ((1 << MQ_SIZE) - 1)
+
+struct meta_queue {
+	STAILQ_HEAD(bgp_dest_queue, bgp_dest) * subq[MQ_SIZE];
+	uint32_t size; /* sum of lengths of all subqueues */
+};
+
+/*
+ * When the update-delay expires, BGP inserts an EOIU (End-Of-Initial-Update) marker
+ * into the BGP_PROCESS_QUEUE_EOIU_MARKER meta queue. This meta queue holds only
+ * bgp_dest structures. To process the EOIU marker, we need to call bgp_process_main_one()
+ * on the corresponding BGP instance. Since the marker itself isn't a real route
+ * (a dummy dest is created for this) and doesn't inherently carry the BGP instance pointer,
+ * we store the struct bgp pointer in the dest->info field. This ensures that, when processing
+ * the EOIU marker, we have the necessary context (the relevant BGP instance) available.
+ */
+struct bgp_eoiu_info {
+	struct bgp *bgp;
+};
+
+/*
+ * Meta Q's specific names
+ */
+enum meta_queue_indexes {
+	META_QUEUE_EARLY_ROUTE,
+	META_QUEUE_OTHER_ROUTE,
+	META_QUEUE_EOIU_MARKER,
 };
 
 static inline void bgp_bump_version(struct bgp_dest *dest)
@@ -603,13 +654,13 @@ static inline bool is_pi_family_matching(struct bgp_path_info *pi,
 }
 
 static inline void prep_for_rmap_apply(struct bgp_path_info *dst_pi,
-				       struct bgp_path_info_extra *dst_pie,
-				       struct bgp_dest *dest,
-				       struct bgp_path_info *src_pi,
-				       struct peer *peer, struct attr *attr)
+				       struct bgp_path_info_extra *dst_pie, struct bgp_dest *dest,
+				       struct bgp_path_info *src_pi, struct peer *peer,
+				       struct peer *from, struct attr *attr)
 {
 	memset(dst_pi, 0, sizeof(struct bgp_path_info));
 	dst_pi->peer = peer;
+	dst_pi->from = from;
 	dst_pi->attr = attr;
 	dst_pi->net = dest;
 	dst_pi->flags = src_pi->flags;
@@ -701,6 +752,7 @@ DECLARE_HOOK(bgp_route_update,
 #define BGP_SHOW_OPT_JSON_DETAIL (1 << 7)
 #define BGP_SHOW_OPT_TERSE (1 << 8)
 #define BGP_SHOW_OPT_ROUTES_DETAIL (1 << 9)
+#define BGP_SHOW_OPT_INTERNAL_DATA (1 << 10)
 
 /* Prototypes. */
 extern void bgp_rib_remove(struct bgp_dest *dest, struct bgp_path_info *pi,
@@ -750,12 +802,16 @@ extern void bgp_path_info_delete(struct bgp_dest *dest,
 				 struct bgp_path_info *pi);
 extern struct bgp_path_info_extra *
 bgp_path_info_extra_get(struct bgp_path_info *path);
+extern struct bgp_path_info_extra *bgp_evpn_path_info_extra_get(struct bgp_path_info *path);
+extern bool bgp_path_info_has_valid_label(const struct bgp_path_info *path);
 extern void bgp_path_info_set_flag(struct bgp_dest *dest,
 				   struct bgp_path_info *path, uint32_t flag);
 extern void bgp_path_info_unset_flag(struct bgp_dest *dest,
 				     struct bgp_path_info *path, uint32_t flag);
 extern void bgp_path_info_path_with_addpath_rx_str(struct bgp_path_info *pi,
 						   char *buf, size_t buf_len);
+extern bool bgp_path_info_labels_same(const struct bgp_path_info *bpi,
+				      const mpls_label_t *label, uint32_t n);
 
 extern int bgp_nlri_parse_ip(struct peer *, struct attr *, struct bgp_nlri *);
 
@@ -773,6 +829,7 @@ extern void bgp_redistribute_withdraw(struct bgp *, afi_t, int, unsigned short);
 
 extern void bgp_static_add(struct bgp *);
 extern void bgp_static_delete(struct bgp *);
+extern void bgp_address_family_distance_delete(void);
 extern void bgp_static_redo_import_check(struct bgp *);
 extern void bgp_purge_static_redist_routes(struct bgp *bgp);
 extern void bgp_static_update(struct bgp *bgp, const struct prefix *p,
@@ -792,16 +849,26 @@ extern void bgp_update(struct peer *peer, const struct prefix *p,
 		       uint32_t addpath_id, struct attr *attr, afi_t afi,
 		       safi_t safi, int type, int sub_type,
 		       struct prefix_rd *prd, mpls_label_t *label,
-		       uint32_t num_labels, int soft_reconfig,
+		       uint8_t num_labels, int soft_reconfig,
 		       struct bgp_route_evpn *evpn);
 extern void bgp_withdraw(struct peer *peer, const struct prefix *p,
 			 uint32_t addpath_id, afi_t afi, safi_t safi, int type,
 			 int sub_type, struct prefix_rd *prd,
-			 mpls_label_t *label, uint32_t num_labels,
-			 struct bgp_route_evpn *evpn);
+			 mpls_label_t *label, uint8_t num_labels);
 
-/* for bgp_nexthop and bgp_damp */
-extern void bgp_process(struct bgp *, struct bgp_dest *, afi_t, safi_t);
+/*
+ * Add a route to be processed for bgp bestpath through the bgp
+ * workqueue.  This route is added to the end of all other routes
+ * queued for processing
+ *
+ * bgp_process_early adds the route for processing at the beginning
+ * of the current queue for processing.
+ */
+extern void bgp_process(struct bgp *bgp, struct bgp_dest *dest,
+			struct bgp_path_info *pi, afi_t afi, safi_t safi);
+
+extern void bgp_process_early(struct bgp *bgp, struct bgp_dest *dest,
+			      struct bgp_path_info *pi, afi_t afi, safi_t safi);
 
 /*
  * Add an end-of-initial-update marker to the process queue. This is just a
@@ -845,10 +912,10 @@ extern void route_vty_out(struct vty *vty, const struct prefix *p,
 extern void route_vty_out_tag(struct vty *vty, const struct prefix *p,
 			      struct bgp_path_info *path, int display,
 			      safi_t safi, json_object *json);
-extern void route_vty_out_tmp(struct vty *vty, struct bgp_dest *dest,
-			      const struct prefix *p, struct attr *attr,
-			      safi_t safi, bool use_json, json_object *json_ar,
-			      bool wide);
+extern void route_vty_out_tmp(struct vty *vty, struct bgp *bgp,
+			      struct bgp_dest *dest, const struct prefix *p,
+			      struct attr *attr, safi_t safi, bool use_json,
+			      json_object *json_ar, bool wide);
 extern void route_vty_out_overlay(struct vty *vty, const struct prefix *p,
 				  struct bgp_path_info *path, int display,
 				  json_object *json);
@@ -898,12 +965,12 @@ extern void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 					const struct prefix *p,
 					const struct prefix_rd *prd, afi_t afi,
 					safi_t safi, json_object *json,
-					bool incremental_print);
-extern void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
-				 struct bgp_dest *bn, const struct prefix *p,
-				 struct bgp_path_info *path, afi_t afi,
-				 safi_t safi, enum rpki_states,
-				 json_object *json_paths);
+					bool incremental_print,
+					bool local_table);
+extern void route_vty_out_detail(struct vty *vty, struct bgp *bgp, struct bgp_dest *bn,
+				 const struct prefix *p, struct bgp_path_info *path, afi_t afi,
+				 safi_t safi, enum rpki_states, json_object *json_paths,
+				 struct attr *attr, uint16_t show_opts);
 extern int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t safi,
 			     struct bgp_table *table, struct prefix_rd *prd,
 			     enum bgp_show_type type, void *output_arg,
@@ -940,4 +1007,9 @@ extern int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 #define bgp_path_info_add(A, B)                                                \
 	bgp_path_info_add_with_caller(__func__, (A), (B))
 #define bgp_path_info_free(B) bgp_path_info_free_with_caller(__func__, (B))
+extern void bgp_meta_queue_free(struct meta_queue *mq);
+extern int early_route_process(struct bgp *bgp, struct bgp_dest *dest);
+extern int other_route_process(struct bgp *bgp, struct bgp_dest *dest);
+extern int eoiu_marker_process(struct bgp *bgp, struct bgp_dest *dest);
+extern uint32_t bgp_med_value(struct attr *attr, struct bgp *bgp);
 #endif /* _QUAGGA_BGP_ROUTE_H */

@@ -463,7 +463,7 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 
 		bgp_aggregate_decrement(bgp, p, bpi, afi, safi);
 		bgp_path_info_delete(bn, bpi);
-		bgp_process(bgp, bn, afi, safi);
+		bgp_process(bgp, bn, bpi, afi, safi);
 	} else {
 		vnc_zlog_debug_verbose(
 			"%s: Couldn't find route (safi=%d) at prefix %pFX",
@@ -549,6 +549,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 		   int flags)
 {
 	afi_t afi; /* of the VN address */
+	struct bgp_labels bgp_labels = {};
 	struct bgp_path_info *new;
 	struct bgp_path_info *bpi;
 	struct bgp_dest *bn;
@@ -592,7 +593,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 		}
 	}
 
-	if (label)
+	if (label && *label != MPLS_INVALID_LABEL)
 		label_val = *label;
 	else
 		label_val = MPLS_LABEL_IMPLICIT_NULL;
@@ -666,10 +667,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 		attr.flag |= ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF);
 	}
 
-	if (med) {
-		attr.med = *med;
-		attr.flag |= ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC);
-	}
+	if (med)
+		bgp_attr_set_med(&attr, *med);
 
 	/* override default weight assigned by bgp_attr_default_set() */
 	attr.weight = rfd->peer ? rfd->peer->weight[afi][safi] : 0;
@@ -862,10 +861,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 
 	red = bgp_redist_lookup(bgp, afi, type, 0);
 
-	if (red && red->redist_metric_flag) {
-		attr.med = red->redist_metric;
-		attr.flag |= ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC);
-	}
+	if (red && red->redist_metric_flag)
+		bgp_attr_set_med(&attr, red->redist_metric);
 
 	bn = bgp_afi_node_get(bgp->rib[afi][safi], afi, safi, p, prd);
 
@@ -1001,7 +998,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 
 			/* Process change. */
 			bgp_aggregate_increment(bgp, p, bpi, afi, safi);
-			bgp_process(bgp, bn, afi, safi);
+			bgp_process(bgp, bn, bpi, afi, safi);
 			bgp_dest_unlock_node(bn);
 
 			vnc_zlog_debug_any(
@@ -1020,7 +1017,10 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	new->extra->vnc = XCALLOC(MTYPE_BGP_ROUTE_EXTRA_VNC,
 				  sizeof(struct bgp_path_info_extra_vnc));
 	new->extra->vnc->vnc.export.rfapi_handle = (void *)rfd;
-	encode_label(label_val, &new->extra->label[0]);
+
+	encode_label(label_val, &bgp_labels.label[0]);
+	bgp_labels.num_labels = 1;
+	new->extra->labels = bgp_labels_intern(&bgp_labels);
 
 	/* debug */
 
@@ -1029,8 +1029,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 		rfapiPrintBi(NULL, new);
 	}
 
-	bgp_aggregate_increment(bgp, p, new, afi, safi);
 	bgp_path_info_add(bn, new);
+	bgp_aggregate_increment(bgp, p, new, afi, safi);
 
 	if (safi == SAFI_MPLS_VPN) {
 		struct bgp_dest *pdest = NULL;
@@ -1046,7 +1046,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	}
 
 	bgp_dest_unlock_node(bn);
-	bgp_process(bgp, bn, afi, safi);
+	bgp_process(bgp, bn, new, afi, safi);
 
 	vnc_zlog_debug_any(
 		"%s: Added route (safi=%s) at prefix %s (bn=%p, prd=%pRDP)",

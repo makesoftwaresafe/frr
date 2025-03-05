@@ -44,7 +44,7 @@ def setup_module(mod):
 
     router_list = tgen.routers()
 
-    for i, (rname, router) in enumerate(router_list.items(), 1):
+    for _, (rname, router) in enumerate(router_list.items(), 1):
         router.load_config(
             TopoRouter.RD_ZEBRA, os.path.join(CWD, "{}/zebra.conf".format(rname))
         )
@@ -101,6 +101,16 @@ def show_rpki_prefixes(rname, expected, vrf=None):
     return topotest.json_cmp(output, expected)
 
 
+def show_rpki_valid(rname, expected, vrf=None):
+    tgen = get_topogen()
+
+    cmd = "show bgp ipv4 detail json"
+
+    output = json.loads(tgen.gears[rname].vtysh_cmd(cmd))
+
+    return topotest.json_cmp(output, expected)
+
+
 def show_bgp_ipv4_table_rpki(rname, rpki_state, expected, vrf=None):
     tgen = get_topogen()
 
@@ -121,6 +131,25 @@ def show_bgp_ipv4_table_rpki(rname, rpki_state, expected, vrf=None):
         return {"error": "expected {} prefixes. Got {}".format(expected_nb, output_nb)}
 
     return topotest.json_cmp(output, expected)
+
+
+def test_show_bgp_rpki_prefixes_valid():
+    tgen = get_topogen()
+
+    if tgen.routers_have_failure():
+        pytest.skip(tgen.errors)
+
+    for rname in ["r1", "r3"]:
+        logger.info("{}: checking if rtrd is running".format(rname))
+        if rtrd_process[rname].poll() is not None:
+            pytest.skip(tgen.errors)
+
+    rname = "r2"
+    expected = open(os.path.join(CWD, "{}/bgp_rpki_valid.json".format(rname))).read()
+    expected_json = json.loads(expected)
+    test_func = functools.partial(show_rpki_valid, rname, expected_json)
+    _, result = topotest.run_and_expect(test_func, None, count=60, wait=0.5)
+    assert result is None, "Failed to see RPKI on {}".format(rname)
 
 
 def test_show_bgp_rpki_prefixes():
@@ -189,7 +218,7 @@ def test_show_bgp_rpki_prefixes_no_rpki_cache():
         """
 configure
 rpki
- no rpki cache 192.0.2.1 15432 preference 1
+ no rpki cache tcp 192.0.2.1 15432 preference 1
 exit
 """
     )
@@ -219,7 +248,7 @@ def test_show_bgp_rpki_prefixes_reconnect():
         """
 configure
 rpki
- rpki cache 192.0.2.1 15432 preference 1
+ rpki cache tcp 192.0.2.1 15432 preference 1
 exit
 """
     )
@@ -319,7 +348,7 @@ def test_show_bgp_rpki_prefixes_vrf():
 configure
 vrf vrf10
  rpki
-  rpki cache 192.0.2.3 15432 preference 1
+  rpki cache tcp 192.0.2.3 15432 preference 1
  exit
 exit
 """

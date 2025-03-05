@@ -85,15 +85,18 @@ class SnmpTester(object):
         return out_dict, out_list
 
     def get(self, oid):
-        cmd = "snmpget {0} {1}".format(self._snmp_config(), oid)
-
+        cmd = "snmpget {0} {1} 2>&1 | grep -v SNMPv2-PDU".format(
+            self._snmp_config(), oid
+        )
         result = self.router.cmd(cmd)
         if "not found" in result:
             return None
         return self._get_snmp_value(result)
 
     def get_next(self, oid):
-        cmd = "snmpgetnext {0} {1}".format(self._snmp_config(), oid)
+        cmd = "snmpgetnext {0} {1} 2>&1 | grep -v SNMPv2-PDU".format(
+            self._snmp_config(), oid
+        )
 
         result = self.router.cmd(cmd)
         print("get_next: {}".format(result))
@@ -101,10 +104,16 @@ class SnmpTester(object):
             return None
         return self._get_snmp_value(result)
 
-    def walk(self, oid):
-        cmd = "snmpwalk {0} {1}".format(self._snmp_config(), oid)
+    def walk(self, oid, raw=False):
+        cmd = "snmpwalk {0} {1} 2>&1 | grep -v SNMPv2-PDU".format(
+            self._snmp_config(), oid
+        )
 
         result = self.router.cmd(cmd)
+
+        if raw:
+            return result
+
         return self._parse_multiline(result)
 
     def parse_notif_ipv4(self, notif):

@@ -16,7 +16,6 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
 from functools import partial
 
 import pytest
@@ -35,8 +34,7 @@ from lib.topotest import interface_set_status, json_cmp
 # pylint: disable=C0413
 # Import topogen and topotest helpers
 from lib import topotest
-from lib.topogen import Topogen, TopoRouter, get_topogen
-from lib.topolog import logger
+from lib.topogen import Topogen, TopoRouter
 
 pytestmark = [pytest.mark.ospfd]
 
@@ -220,10 +218,12 @@ def _test_router_id(tgen, testbin):
 
         step("router id: check for modified router id")
         r1.vtysh_multicmd("conf t\nrouter ospf\nospf router-id 1.1.1.1")
+        r1.vtysh_multicmd("clear ip ospf process")
         _wait_output(p, "SUCCESS: {}".format(waitlist[1]))
 
         step("router id: check for restored router id")
         r1.vtysh_multicmd("conf t\nrouter ospf\nospf router-id 1.0.0.0")
+        r1.vtysh_multicmd("clear ip ospf process")
         _wait_output(p, "SUCCESS: {}".format(waitlist[2]))
     except Exception as error:
         logging.error("ERROR: %s", error)
@@ -277,9 +277,7 @@ def _test_add_data(tgen, apibin):
                             "linkStateId": "230.0.0.2",
                             "advertisingRouter": "1.0.0.0",
                             "lsaSeqNumber": "80000001",
-                            "opaqueValues": {
-                              "opaqueData": "00000202"
-                            }
+                            "opaqueValues": {"opaqueData": "00000202"},
                         },
                     ],
                 }
@@ -330,8 +328,8 @@ def _test_add_data(tgen, apibin):
                             "advertisingRouter": "1.0.0.0",
                             "lsaSeqNumber": "80000001",
                             "opaqueValues": {
-                              "opaqueData": "00010101",
-                            }
+                                "opaqueData": "00010101",
+                            },
                         },
                     ],
                 }
@@ -381,8 +379,8 @@ def _test_add_data(tgen, apibin):
                     "advertisingRouter": "1.0.0.0",
                     "lsaSeqNumber": "80000001",
                     "opaqueValues": {
-                      "opaqueData": "deadbeaf01234567",
-                    }
+                        "opaqueData": "deadbeaf01234567",
+                    },
                 },
             ]
         }
@@ -434,8 +432,8 @@ def _test_add_data(tgen, apibin):
                     "advertisingRouter": "1.0.0.0",
                     "lsaSeqNumber": "80000002",
                     "opaqueValues": {
-                      "opaqueData": "ebadf00d",
-                    }
+                        "opaqueData": "ebadf00d",
+                    },
                 },
             ]
         }
@@ -1664,8 +1662,8 @@ def _test_opaque_link_local_lsa_crash(tgen, apibin):
                             "advertisingRouter": "1.0.0.0",
                             "lsaSeqNumber": "80000001",
                             "opaqueValues": {
-                              "opaqueData": "feedaceedeadbeef",
-                            }
+                                "opaqueData": "feedaceedeadbeef",
+                            },
                         },
                     ],
                 }
@@ -1695,8 +1693,8 @@ def _test_opaque_link_local_lsa_crash(tgen, apibin):
                             "advertisingRouter": "1.0.0.0",
                             "lsaSeqNumber": "80000001",
                             "opaqueValues": {
-                              "opaqueData": "feedaceecafebeef",
-                            }
+                                "opaqueData": "feedaceecafebeef",
+                            },
                         },
                     ],
                 }

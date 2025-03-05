@@ -31,6 +31,7 @@
 
 DEFINE_MTYPE_STATIC(LIB, ZCLIENT, "Zclient");
 DEFINE_MTYPE_STATIC(LIB, REDIST_INST, "Redistribution instance IDs");
+DEFINE_MTYPE_STATIC(LIB, REDIST_TABLE_DIRECT, "Redistribution table direct");
 
 /* Zebra client events. */
 enum zclient_event { ZCLIENT_SCHEDULE, ZCLIENT_READ, ZCLIENT_CONNECT };
@@ -104,6 +105,11 @@ void zclient_free(struct zclient *zclient)
 	XFREE(MTYPE_ZCLIENT, zclient);
 }
 
+static void redist_free_instance(void *data)
+{
+	XFREE(MTYPE_REDIST_INST, data);
+}
+
 unsigned short *redist_check_instance(struct redist_proto *red,
 				      unsigned short instance)
 {
@@ -126,8 +132,10 @@ void redist_add_instance(struct redist_proto *red, unsigned short instance)
 
 	red->enabled = 1;
 
-	if (!red->instances)
+	if (!red->instances) {
 		red->instances = list_new();
+		red->instances->del = redist_free_instance;
+	}
 
 	in = XMALLOC(MTYPE_REDIST_INST, sizeof(unsigned short));
 	*in = instance;
@@ -143,8 +151,89 @@ void redist_del_instance(struct redist_proto *red, unsigned short instance)
 		return;
 
 	listnode_delete(red->instances, id);
-	XFREE(MTYPE_REDIST_INST, id);
+	red->instances->del(id);
 	if (!red->instances->count) {
+		red->enabled = 0;
+		list_delete(&red->instances);
+	}
+}
+
+static void redist_free_table_direct(void *data)
+{
+	XFREE(MTYPE_REDIST_TABLE_DIRECT, data);
+}
+
+struct redist_table_direct *redist_lookup_table_direct(const struct redist_proto *red,
+						       const struct redist_table_direct *table)
+{
+	struct redist_table_direct *ntable;
+	struct listnode *node;
+
+	if (red->instances == NULL)
+		return NULL;
+
+	for (ALL_LIST_ELEMENTS_RO(red->instances, node, ntable)) {
+		if (table->vrf_id != ntable->vrf_id)
+			continue;
+		if (table->table_id != ntable->table_id)
+			continue;
+
+		return ntable;
+	}
+
+	return NULL;
+}
+
+bool redist_table_direct_has_id(const struct redist_proto *red, int table_id)
+{
+	struct redist_table_direct *table;
+	struct listnode *node;
+
+	if (red->instances == NULL)
+		return false;
+
+	for (ALL_LIST_ELEMENTS_RO(red->instances, node, table)) {
+		if (table->table_id != table_id)
+			continue;
+
+		return true;
+	}
+
+	return false;
+}
+
+void redist_add_table_direct(struct redist_proto *red, const struct redist_table_direct *table)
+{
+	struct redist_table_direct *ntable;
+
+	ntable = redist_lookup_table_direct(red, table);
+	if (ntable != NULL)
+		return;
+
+	if (red->instances == NULL) {
+		red->instances = list_new();
+		red->instances->del = redist_free_table_direct;
+	}
+
+	red->enabled = 1;
+
+	ntable = XCALLOC(MTYPE_REDIST_TABLE_DIRECT, sizeof(*ntable));
+	ntable->vrf_id = table->vrf_id;
+	ntable->table_id = table->table_id;
+	listnode_add(red->instances, ntable);
+}
+
+void redist_del_table_direct(struct redist_proto *red, const struct redist_table_direct *table)
+{
+	struct redist_table_direct *ntable;
+
+	ntable = redist_lookup_table_direct(red, table);
+	if (ntable == NULL)
+		return;
+
+	listnode_delete(red->instances, ntable);
+	red->instances->del(ntable);
+	if (red->instances->count == 0) {
 		red->enabled = 0;
 		list_delete(&red->instances);
 	}
@@ -152,14 +241,10 @@ void redist_del_instance(struct redist_proto *red, unsigned short instance)
 
 void redist_del_all_instances(struct redist_proto *red)
 {
-	struct listnode *ln, *nn;
-	unsigned short *id;
-
 	if (!red->instances)
 		return;
 
-	for (ALL_LIST_ELEMENTS(red->instances, ln, nn, id))
-		redist_del_instance(red, *id);
+	list_delete(&red->instances);
 }
 
 /* Stop zebra client services. */
@@ -282,6 +367,7 @@ static void zclient_flush_data(struct event *thread)
 				zclient->sock, &zclient->t_write);
 		break;
 	case BUFFER_EMPTY:
+		/* Currently only Sharpd and Bgpd has callbacks defined */
 		if (zclient->zebra_buffer_write_ready)
 			(*zclient->zebra_buffer_write_ready)();
 		break;
@@ -479,6 +565,17 @@ enum zclient_send_status zclient_send_localsid(struct zclient *zclient,
 	return zclient_route_send(ZEBRA_ROUTE_ADD, zclient, &api);
 }
 
+static void zclient_send_table_direct(struct zclient *zclient, afi_t afi, int type)
+{
+	struct redist_table_direct *table;
+	struct redist_proto *red = &zclient->mi_redist[afi][ZEBRA_ROUTE_TABLE_DIRECT];
+	struct listnode *node;
+
+	for (ALL_LIST_ELEMENTS_RO(red->instances, node, table))
+		zebra_redistribute_send(type, zclient, afi, ZEBRA_ROUTE_TABLE_DIRECT,
+					table->table_id, table->vrf_id);
+}
+
 /* Send register requests to zebra daemon for the information in a VRF. */
 void zclient_send_reg_requests(struct zclient *zclient, vrf_id_t vrf_id)
 {
@@ -511,6 +608,12 @@ void zclient_send_reg_requests(struct zclient *zclient, vrf_id_t vrf_id)
 			for (i = 0; i < ZEBRA_ROUTE_MAX; i++) {
 				if (!zclient->mi_redist[afi][i].enabled)
 					continue;
+
+				if (i == ZEBRA_ROUTE_TABLE_DIRECT) {
+					zclient_send_table_direct(zclient, afi,
+								  ZEBRA_REDISTRIBUTE_ADD);
+					continue;
+				}
 
 				struct listnode *node;
 				unsigned short *id;
@@ -578,6 +681,12 @@ void zclient_send_dereg_requests(struct zclient *zclient, vrf_id_t vrf_id)
 			for (i = 0; i < ZEBRA_ROUTE_MAX; i++) {
 				if (!zclient->mi_redist[afi][i].enabled)
 					continue;
+
+				if (i == ZEBRA_ROUTE_TABLE_DIRECT) {
+					zclient_send_table_direct(zclient, afi,
+								  ZEBRA_REDISTRIBUTE_DELETE);
+					continue;
+				}
 
 				struct listnode *node;
 				unsigned short *id;
@@ -1039,7 +1148,7 @@ int zapi_nexthop_encode(struct stream *s, const struct zapi_nexthop *api_nh,
 	}
 
 	if (api_nh->weight)
-		stream_putl(s, api_nh->weight);
+		stream_putq(s, api_nh->weight);
 
 	/* Router MAC for EVPN routes. */
 	if (CHECK_FLAG(nh_flags, ZAPI_NEXTHOP_FLAG_EVPN))
@@ -1124,6 +1233,11 @@ int zapi_srv6_locator_encode(struct stream *s, const struct srv6_locator *l)
 	stream_put(s, l->name, strlen(l->name));
 	stream_putw(s, l->prefix.prefixlen);
 	stream_put(s, &l->prefix.prefix, sizeof(l->prefix.prefix));
+	stream_putc(s, l->block_bits_length);
+	stream_putc(s, l->node_bits_length);
+	stream_putc(s, l->function_bits_length);
+	stream_putc(s, l->argument_bits_length);
+	stream_putc(s, l->flags);
 	return 0;
 }
 
@@ -1139,6 +1253,11 @@ int zapi_srv6_locator_decode(struct stream *s, struct srv6_locator *l)
 	STREAM_GETW(s, l->prefix.prefixlen);
 	STREAM_GET(&l->prefix.prefix, s, sizeof(l->prefix.prefix));
 	l->prefix.family = AF_INET6;
+	STREAM_GETC(s, l->block_bits_length);
+	STREAM_GETC(s, l->node_bits_length);
+	STREAM_GETC(s, l->function_bits_length);
+	STREAM_GETC(s, l->argument_bits_length);
+	STREAM_GETC(s, l->flags);
 	return 0;
 
 stream_failure:
@@ -1206,6 +1325,24 @@ enum zclient_send_status zclient_nhg_send(struct zclient *zclient, int cmd,
 
 	return zclient_send_message(zclient);
 }
+
+/* size needed by a stream for redistributing a route */
+int zapi_redistribute_stream_size(struct zapi_route *api)
+{
+	size_t msg_size = 0;
+	size_t nh_size = sizeof(struct zapi_nexthop);
+
+	msg_size = sizeof(struct zapi_route);
+	/* remove unused nexthop structures */
+	msg_size -= (MULTIPATH_NUM - api->nexthop_num) * nh_size;
+	/* remove unused backup nexthop structures */
+	msg_size -= (MULTIPATH_NUM - api->backup_nexthop_num) * nh_size;
+	/* remove unused opaque values */
+	msg_size -= ZAPI_MESSAGE_OPAQUE_LENGTH - api->opaque.length;
+
+	return msg_size;
+}
+
 
 int zapi_route_encode(uint8_t cmd, struct stream *s, struct zapi_route *api)
 {
@@ -1411,7 +1548,7 @@ int zapi_nexthop_decode(struct stream *s, struct zapi_nexthop *api_nh,
 	}
 
 	if (CHECK_FLAG(api_nh->flags, ZAPI_NEXTHOP_FLAG_WEIGHT))
-		STREAM_GETL(s, api_nh->weight);
+		STREAM_GETQ(s, api_nh->weight);
 
 	/* Router MAC for EVPN routes. */
 	if (CHECK_FLAG(api_nh->flags, ZAPI_NEXTHOP_FLAG_EVPN))
@@ -2005,6 +2142,15 @@ bool zapi_route_notify_decode(struct stream *s, struct prefix *p,
 			      enum zapi_route_notify_owner *note,
 			      afi_t *afi, safi_t *safi)
 {
+	struct prefix dummy;
+
+	return zapi_route_notify_decode_srcdest(s, p, &dummy, tableid, note, afi, safi);
+}
+
+bool zapi_route_notify_decode_srcdest(struct stream *s, struct prefix *p, struct prefix *src_p,
+				      uint32_t *tableid, enum zapi_route_notify_owner *note,
+				      afi_t *afi, safi_t *safi)
+{
 	uint32_t t;
 	afi_t afi_val;
 	safi_t safi_val;
@@ -2014,6 +2160,9 @@ bool zapi_route_notify_decode(struct stream *s, struct prefix *p,
 	STREAM_GETC(s, p->family);
 	STREAM_GETC(s, p->prefixlen);
 	STREAM_GET(&p->u.prefix, s, prefix_blen(p));
+	src_p->family = p->family;
+	STREAM_GETC(s, src_p->prefixlen);
+	STREAM_GET(&src_p->u.prefix, s, prefix_blen(src_p));
 	STREAM_GETL(s, t);
 	STREAM_GETC(s, afi_val);
 	STREAM_GETC(s, safi_val);
@@ -2122,6 +2271,46 @@ stream_failure:
 	return false;
 }
 
+bool zapi_srv6_sid_notify_decode(struct stream *s, struct srv6_sid_ctx *ctx,
+				 struct in6_addr *sid_value, uint32_t *func,
+				 uint32_t *wide_func,
+				 enum zapi_srv6_sid_notify *note,
+				 char **p_locator_name)
+{
+	uint32_t f, wf;
+	uint16_t len;
+	static char locator_name[SRV6_LOCNAME_SIZE] = {};
+
+	STREAM_GET(note, s, sizeof(*note));
+	STREAM_GET(ctx, s, sizeof(struct srv6_sid_ctx));
+	STREAM_GET(sid_value, s, sizeof(struct in6_addr));
+	STREAM_GETL(s, f);
+	STREAM_GETL(s, wf);
+
+	if (func)
+		*func = f;
+	if (wide_func)
+		*wide_func = wf;
+
+	STREAM_GETW(s, len);
+	if (len > SRV6_LOCNAME_SIZE) {
+		*p_locator_name = NULL;
+		return false;
+	}
+	if (p_locator_name) {
+		if (len == 0)
+			*p_locator_name = NULL;
+		else {
+			STREAM_GET(locator_name, s, len);
+			*p_locator_name = locator_name;
+		}
+	}
+	return true;
+
+stream_failure:
+	return false;
+}
+
 struct nexthop *nexthop_from_zapi_nexthop(const struct zapi_nexthop *znh)
 {
 	struct nexthop *n = nexthop_new();
@@ -2129,8 +2318,29 @@ struct nexthop *nexthop_from_zapi_nexthop(const struct zapi_nexthop *znh)
 	n->type = znh->type;
 	n->vrf_id = znh->vrf_id;
 	n->ifindex = znh->ifindex;
-	n->gate = znh->gate;
+
+	/* only copy values that have meaning - make sure "spare bytes" are
+	 * left zeroed for hashing (look at _nexthop_hash_bytes)
+	 */
+	switch (znh->type) {
+	case NEXTHOP_TYPE_BLACKHOLE:
+		n->bh_type = znh->bh_type;
+		break;
+	case NEXTHOP_TYPE_IPV4:
+	case NEXTHOP_TYPE_IPV4_IFINDEX:
+		n->gate.ipv4 = znh->gate.ipv4;
+		break;
+	case NEXTHOP_TYPE_IPV6:
+	case NEXTHOP_TYPE_IPV6_IFINDEX:
+		n->gate.ipv6 = znh->gate.ipv6;
+		break;
+	case NEXTHOP_TYPE_IFINDEX:
+		/* nothing, ifindex is always copied */
+		break;
+	}
+
 	n->srte_color = znh->srte_color;
+	n->weight = znh->weight;
 
 	/*
 	 * This function currently handles labels
@@ -2171,6 +2381,7 @@ int zapi_nexthop_from_nexthop(struct zapi_nexthop *znh,
 	znh->weight = nh->weight;
 	znh->ifindex = nh->ifindex;
 	znh->gate = nh->gate;
+	znh->srte_color = nh->srte_color;
 
 	if (CHECK_FLAG(nh->flags, NEXTHOP_FLAG_ONLINK))
 		SET_FLAG(znh->flags, ZAPI_NEXTHOP_FLAG_ONLINK);
@@ -2321,7 +2532,7 @@ static bool zapi_nexthop_update_decode(struct stream *s, struct prefix *match,
 	STREAM_GETW(s, nhr->instance);
 	STREAM_GETC(s, nhr->distance);
 	STREAM_GETL(s, nhr->metric);
-	STREAM_GETC(s, nhr->nexthop_num);
+	STREAM_GETW(s, nhr->nexthop_num);
 
 	for (i = 0; i < nhr->nexthop_num; i++) {
 		if (zapi_nexthop_decode(s, &(nhr->nexthops[i]), 0, 0) != 0)
@@ -3264,10 +3475,154 @@ int srv6_manager_release_locator_chunk(struct zclient *zclient,
 	return zclient_send_message(zclient);
 }
 
+/**
+ * Function to request a SRv6 locator in an asynchronous way
+ *
+ * @param zclient The zclient used to connect to SRv6 Manager (zebra)
+ * @param locator_name Name of SRv6 locator
+ * @return 0 on success, -1 otherwise
+ */
+int srv6_manager_get_locator(struct zclient *zclient, const char *locator_name)
+{
+	struct stream *s;
+	size_t len;
+
+	if (!locator_name)
+		return -1;
+
+	if (zclient->sock < 0) {
+		flog_err(EC_LIB_ZAPI_SOCKET, "%s: invalid zclient socket",
+			 __func__);
+		return -1;
+	}
+
+	if (zclient_debug)
+		zlog_debug("Getting SRv6 Locator %s", locator_name);
+
+	len = strlen(locator_name);
+
+	/* Send request */
+	s = zclient->obuf;
+	stream_reset(s);
+	zclient_create_header(s, ZEBRA_SRV6_MANAGER_GET_LOCATOR, VRF_DEFAULT);
+
+	/* Locator name */
+	stream_putw(s, len);
+	stream_put(s, locator_name, len);
+
+	/* Put length at the first point of the stream. */
+	stream_putw_at(s, 0, stream_get_endp(s));
+
+	return zclient_send_message(zclient);
+}
+
+/**
+ * Function to request an SRv6 SID in an asynchronous way
+ *
+ * @param zclient The zclient used to connect to SRv6 manager (zebra)
+ * @param ctx Context associated with the SRv6 SID
+ * @param sid_value SRv6 SID value for explicit SID allocation
+ * @param locator_name Name of the parent locator for dynamic SID allocation
+ * @param sid_func SID function assigned by the SRv6 Manager
+ * @result 0 on success, -1 otherwise
+ */
+int srv6_manager_get_sid(struct zclient *zclient, const struct srv6_sid_ctx *ctx,
+			 struct in6_addr *sid_value, const char *locator_name,
+			 uint32_t *sid_func)
+{
+	struct stream *s;
+	uint8_t flags = 0;
+	size_t len;
+	char buf[256];
+
+	if (zclient->sock < 0) {
+		flog_err(EC_LIB_ZAPI_SOCKET, "%s: invalid zclient socket",
+			 __func__);
+		return ZCLIENT_SEND_FAILURE;
+	}
+
+	if (zclient_debug)
+		zlog_debug("Getting SRv6 SID: %s",
+			   srv6_sid_ctx2str(buf, sizeof(buf), ctx));
+
+	/* send request */
+	s = zclient->obuf;
+	stream_reset(s);
+
+	zclient_create_header(s, ZEBRA_SRV6_MANAGER_GET_SRV6_SID, VRF_DEFAULT);
+
+	/* Context associated with the SRv6 SID */
+	stream_put(s, ctx, sizeof(struct srv6_sid_ctx));
+
+	/* Flags */
+	if (!sid_zero_ipv6(sid_value))
+		SET_FLAG(flags, ZAPI_SRV6_MANAGER_SID_FLAG_HAS_SID_VALUE);
+	if (locator_name)
+		SET_FLAG(flags, ZAPI_SRV6_MANAGER_SID_FLAG_HAS_LOCATOR);
+	stream_putc(s, flags);
+
+	/* SRv6 SID value */
+	if (CHECK_FLAG(flags, ZAPI_SRV6_MANAGER_SID_FLAG_HAS_SID_VALUE))
+		stream_put(s, sid_value, sizeof(struct in6_addr));
+
+	/* SRv6 locator */
+	if (CHECK_FLAG(flags, ZAPI_SRV6_MANAGER_SID_FLAG_HAS_LOCATOR)) {
+		len = strlen(locator_name);
+		stream_putw(s, len);
+		stream_put(s, locator_name, len);
+	}
+
+	/* Put length at the first point of the stream. */
+	stream_putw_at(s, 0, stream_get_endp(s));
+
+	/* Send the request to SRv6 Manager */
+	return zclient_send_message(zclient);
+}
+
+/**
+ * Function to release an SRv6 SID
+ *
+ * @param zclient Zclient used to connect to SRv6 manager (zebra)
+ * @param ctx Context associated with the SRv6 SID to be removed
+ * @result 0 on success, -1 otherwise
+ */
+int srv6_manager_release_sid(struct zclient *zclient,
+			     const struct srv6_sid_ctx *ctx)
+{
+	struct stream *s;
+	char buf[256];
+
+	if (zclient->sock < 0) {
+		flog_err(EC_LIB_ZAPI_SOCKET, "%s: invalid zclient socket",
+			 __func__);
+		return -1;
+	}
+
+	if (zclient_debug)
+		zlog_debug("Releasing SRv6 SID: %s",
+			   srv6_sid_ctx2str(buf, sizeof(buf), ctx));
+
+	/* send request */
+	s = zclient->obuf;
+	stream_reset(s);
+
+	zclient_create_header(s, ZEBRA_SRV6_MANAGER_RELEASE_SRV6_SID,
+			      VRF_DEFAULT);
+
+	/* Context associated with the SRv6 SID */
+	stream_put(s, ctx, sizeof(struct srv6_sid_ctx));
+
+	/* Put length at the first point of the stream. */
+	stream_putw_at(s, 0, stream_get_endp(s));
+
+	/* Send the SID release message */
+	return zclient_send_message(zclient);
+}
+
 /*
  * Asynchronous label chunk request
  *
- * @param zclient Zclient used to connect to label manager (zebra)
+ * @param zclient The zclient used to connect to label manager (zebra)
  * @param keep Avoid garbage collection
  * @param chunk_size Amount of labels requested
  * @param base Base for the label chunk. if MPLS_LABEL_BASE_ANY we do not care
@@ -3327,7 +3682,7 @@ int lm_get_label_chunk(struct zclient *zclient, uint8_t keep, uint32_t base,
 	if (zclient_debug)
 		zlog_debug("Getting Label Chunk");
 
-	if (zclient->sock < 0)
+	if (!zclient || zclient->sock < 0)
 		return -1;
 
 	/* send request */
@@ -4437,9 +4792,52 @@ static void zclient_read(struct event *thread)
 	zclient_event(ZCLIENT_READ, zclient);
 }
 
+static void zclient_redistribute_table_direct(struct zclient *zclient, vrf_id_t vrf_id, afi_t afi,
+					      int instance, int command)
+{
+	struct redist_proto *red = &zclient->mi_redist[afi][ZEBRA_ROUTE_TABLE_DIRECT];
+	bool has_table;
+	struct redist_table_direct table = {
+		.vrf_id = vrf_id,
+		.table_id = instance,
+	};
+
+	has_table = redist_lookup_table_direct(red, &table);
+
+	if (command == ZEBRA_REDISTRIBUTE_ADD) {
+		if (has_table)
+			return;
+
+		redist_add_table_direct(red, &table);
+	} else {
+		if (!has_table)
+			return;
+
+		redist_del_table_direct(red, &table);
+	}
+
+	if (zclient->sock > 0)
+		zebra_redistribute_send(command, zclient, afi, ZEBRA_ROUTE_TABLE_DIRECT, instance,
+					vrf_id);
+}
+
 void zclient_redistribute(int command, struct zclient *zclient, afi_t afi,
 			  int type, unsigned short instance, vrf_id_t vrf_id)
 {
+	/*
+	 * When asking for table-direct redistribution the parameter
+	 * `instance` has a different meaning: it means table
+	 * identification.
+	 *
+	 * The table identification information is stored in
+	 * `zclient->mi_redist` along with the VRF identification
+	 * information in a pair (different from the usual single protocol
+	 * instance value).
+	 */
+	if (type == ZEBRA_ROUTE_TABLE_DIRECT) {
+		zclient_redistribute_table_direct(zclient, vrf_id, afi, instance, command);
+		return;
+	}
 
 	if (instance) {
 		if (command == ZEBRA_REDISTRIBUTE_ADD) {
@@ -4496,6 +4894,9 @@ void zclient_redistribute_default(int command, struct zclient *zclient,
 		zebra_redistribute_default_send(command, zclient, afi, vrf_id);
 }
 
+#define ZCLIENT_QUICK_RECONNECT 1
+#define ZCLIENT_SLOW_RECONNECT	5
+#define ZCLIENT_SWITCH_TO_SLOW	30
 static void zclient_event(enum zclient_event event, struct zclient *zclient)
 {
 	switch (event) {
@@ -4505,11 +4906,13 @@ static void zclient_event(enum zclient_event event, struct zclient *zclient)
 		break;
 	case ZCLIENT_CONNECT:
 		if (zclient_debug)
-			zlog_debug(
-				"zclient connect failures: %d schedule interval is now %d",
-				zclient->fail, zclient->fail < 3 ? 10 : 60);
+			zlog_debug("zclient connect failures: %d schedule interval is now %d",
+				   zclient->fail,
+				   zclient->fail < ZCLIENT_SWITCH_TO_SLOW ? ZCLIENT_QUICK_RECONNECT
+									  : ZCLIENT_SLOW_RECONNECT);
 		event_add_timer(zclient->master, zclient_connect, zclient,
-				zclient->fail < 3 ? 10 : 60,
+				zclient->fail < ZCLIENT_SWITCH_TO_SLOW ? ZCLIENT_QUICK_RECONNECT
+								       : ZCLIENT_SLOW_RECONNECT,
 				&zclient->t_connect);
 		break;
 	case ZCLIENT_READ:
@@ -4669,21 +5072,25 @@ char *zclient_dump_route_flags(uint32_t flags, char *buf, size_t len)
 		return buf;
 	}
 
-	snprintfrr(
-		buf, len, "%s%s%s%s%s%s%s%s%s%s",
-		CHECK_FLAG(flags, ZEBRA_FLAG_ALLOW_RECURSION) ? "Recursion "
-							      : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_SELFROUTE) ? "Self " : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_IBGP) ? "iBGP " : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_SELECTED) ? "Selected " : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_FIB_OVERRIDE) ? "Override " : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_EVPN_ROUTE) ? "Evpn " : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_RR_USE_DISTANCE) ? "RR Distance "
-							      : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_TRAPPED) ? "Trapped " : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_OFFLOADED) ? "Offloaded " : "",
-		CHECK_FLAG(flags, ZEBRA_FLAG_OFFLOAD_FAILED) ? "Offload Failed "
-							     : "");
+	snprintfrr(buf, len, "%s%s%s%s%s%s%s%s%s%s%s",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_ALLOW_RECURSION) ? "Recursion "
+								 : "",
+
+		   CHECK_FLAG(flags, ZEBRA_FLAG_SELFROUTE) ? "Self " : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_IBGP) ? "iBGP " : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_SELECTED) ? "Selected " : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_FIB_OVERRIDE) ? "Override " : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_EVPN_ROUTE) ? "Evpn " : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_RR_USE_DISTANCE) ? "RR Distance "
+								 : "",
+
+		   CHECK_FLAG(flags, ZEBRA_FLAG_TRAPPED) ? "Trapped " : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_OFFLOADED) ? "Offloaded " : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_OFFLOAD_FAILED)
+			   ? "Offload Failed "
+			   : "",
+		   CHECK_FLAG(flags, ZEBRA_FLAG_OUTOFSYNC) ? "OutOfSync " : "");
+
 	return buf;
 }
 

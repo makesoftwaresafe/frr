@@ -37,8 +37,6 @@ from lib import topotest
 # Required to instantiate the topology builder class.
 from lib.topogen import Topogen, TopoRouter, get_topogen
 
-pytestmark = [pytest.mark.bgpd, pytest.mark.pimd]
-
 #####################################################
 ##
 ##   Network Topology Definition
@@ -457,7 +455,7 @@ def check_remote_es(esi, vtep_ips, dut_name, down_vteps):
     else:
         tor_ips_rack = tor_ips_rack_1
 
-    for tor_name, tor_ip in tor_ips_rack.items():
+    for _, tor_ip in tor_ips_rack.items():
         remote_ips.append(tor_ip)
 
     # remove down VTEPs from the remote check list

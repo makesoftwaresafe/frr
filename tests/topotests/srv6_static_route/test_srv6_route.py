@@ -27,7 +27,7 @@ from lib import topotest
 from lib.topogen import Topogen, TopoRouter, get_topogen
 from lib.topolog import logger
 
-pytestmark = [pytest.mark.bgpd, pytest.mark.sharpd]
+pytestmark = [pytest.mark.staticd]
 
 
 def open_json_file(filename):
@@ -55,7 +55,7 @@ def setup_module(mod):
     tgen.start_router()
 
 
-def teardown_module(mod):
+def teardown_module():
     tgen = get_topogen()
     tgen.stop_topology()
 
@@ -74,7 +74,7 @@ def test_srv6_static_route():
 
     def check_srv6_static_route(router, expected_file):
         func = functools.partial(_check_srv6_static_route, router, expected_file)
-        success, result = topotest.run_and_expect(func, None, count=15, wait=1)
+        _, result = topotest.run_and_expect(func, None, count=15, wait=1)
         assert result is None, "Failed"
 
     # FOR DEVELOPER:

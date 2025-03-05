@@ -1670,6 +1670,11 @@ static struct ls_edge *get_edge(struct ls_ted *ted, struct ls_node_id adv,
 	struct ls_edge *edge;
 	struct ls_attributes *attr;
 
+	/* Check that Link ID and Node ID are valid */
+	if (IPV4_NET0(link_id.s_addr) || IPV4_NET0(adv.id.ip.addr.s_addr) ||
+	    adv.origin != OSPFv2)
+		return NULL;
+
 	/* Search Edge that corresponds to the Link ID */
 	key.family = AF_INET;
 	IPV4_ADDR_COPY(&key.k.addr, &link_id);
@@ -1743,6 +1748,10 @@ static void ospf_te_update_link(struct ls_ted *ted, struct ls_vertex *vertex,
 
 	/* Get Corresponding Edge from Link State Data Base */
 	edge = get_edge(ted, vertex->node->adv, link_data);
+	if (!edge) {
+		ote_debug("  |- Found no edge from Link Data. Abort!");
+		return;
+	}
 	attr = edge->attributes;
 
 	/* re-attached edge to vertex if needed */
@@ -2247,6 +2256,10 @@ static int ospf_te_parse_te(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 	/* Get corresponding Edge from Link State Data Base */
 	edge = get_edge(ted, attr.adv, attr.standard.local);
+	if (!edge) {
+		ote_debug("  |- Found no edge from Link local add./ID. Abort!");
+		return -1;
+	}
 	old = edge->attributes;
 
 	ote_debug("  |- Process Traffic Engineering LSA %pI4 for Edge %pI4",
@@ -2452,6 +2465,9 @@ static int ospf_te_parse_ri(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 		switch (ntohs(tlvh->type)) {
 		case RI_SR_TLV_SR_ALGORITHM:
+			if (TLV_BODY_SIZE(tlvh) < 1 ||
+			    TLV_BODY_SIZE(tlvh) > ALGORITHM_COUNT)
+				break;
 			algo = (struct ri_sr_tlv_sr_algorithm *)tlvh;
 
 			for (int i = 0; i < ntohs(algo->header.length); i++) {
@@ -2476,6 +2492,8 @@ static int ospf_te_parse_ri(struct ls_ted *ted, struct ospf_lsa *lsa)
 			break;
 
 		case RI_SR_TLV_SRGB_LABEL_RANGE:
+			if (TLV_BODY_SIZE(tlvh) != RI_SR_TLV_LABEL_RANGE_SIZE)
+				break;
 			range = (struct ri_sr_tlv_sid_label_range *)tlvh;
 			size = GET_RANGE_SIZE(ntohl(range->size));
 			lower = GET_LABEL(ntohl(range->lower.value));
@@ -2493,6 +2511,8 @@ static int ospf_te_parse_ri(struct ls_ted *ted, struct ospf_lsa *lsa)
 			break;
 
 		case RI_SR_TLV_SRLB_LABEL_RANGE:
+			if (TLV_BODY_SIZE(tlvh) != RI_SR_TLV_LABEL_RANGE_SIZE)
+				break;
 			range = (struct ri_sr_tlv_sid_label_range *)tlvh;
 			size = GET_RANGE_SIZE(ntohl(range->size));
 			lower = GET_LABEL(ntohl(range->lower.value));
@@ -2510,6 +2530,8 @@ static int ospf_te_parse_ri(struct ls_ted *ted, struct ospf_lsa *lsa)
 			break;
 
 		case RI_SR_TLV_NODE_MSD:
+			if (TLV_BODY_SIZE(tlvh) < RI_SR_TLV_NODE_MSD_SIZE)
+				break;
 			msd = (struct ri_sr_tlv_node_msd *)tlvh;
 			if ((CHECK_FLAG(node->flags, LS_NODE_MSD))
 			    && (node->msd == msd->value))
@@ -2607,6 +2629,7 @@ static int ospf_te_parse_ext_pref(struct ls_ted *ted, struct ospf_lsa *lsa)
 	struct ext_tlv_prefix *ext;
 	struct ext_subtlv_prefix_sid *pref_sid;
 	uint32_t label;
+	uint16_t len, size;
 
 	/* Get corresponding Subnet from Link State Data Base */
 	ext = (struct ext_tlv_prefix *)TLV_HDR_TOP(lsa->data);
@@ -2627,6 +2650,18 @@ static int ospf_te_parse_ext_pref(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 	ote_debug("  |- Process Extended Prefix LSA %pI4 for subnet %pFX",
 		  &lsa->data->id, &pref);
+
+	/*
+	 * Check Extended Prefix TLV size against LSA size
+	 * as only one TLV is allowed per LSA
+	 */
+	len = TLV_BODY_SIZE(&ext->header);
+	size = lsa->size - (OSPF_LSA_HEADER_SIZE + TLV_HDR_SIZE);
+	if (len != size || len <= 0) {
+		ote_debug("  |- Wrong TLV size: %u instead of %u",
+			  (uint32_t)len, (uint32_t)size);
+		return -1;
+	}
 
 	/* Initialize TLV browsing */
 	ls_pref = subnet->ls_pref;
@@ -2733,13 +2768,29 @@ static int ospf_te_parse_ext_link(struct ls_ted *ted, struct ospf_lsa *lsa)
 	lnid.id.ip.area_id = lsa->area->area_id;
 	ext = (struct ext_tlv_link *)TLV_HDR_TOP(lsa->data);
 	edge = get_edge(ted, lnid, ext->link_data);
+	if (!edge) {
+		ote_debug("  |- Found no edge from Extended Link Data. Abort!");
+		return -1;
+	}
 	atr = edge->attributes;
 
 	ote_debug("  |- Process Extended Link LSA %pI4 for edge %pI4",
 		  &lsa->data->id, &edge->attributes->standard.local);
 
-	/* Initialize TLV browsing */
-	len = TLV_BODY_SIZE(&ext->header) - EXT_TLV_LINK_SIZE;
+	/*
+	 * Check Extended Link TLV size against LSA size
+	 * as only one TLV is allowed per LSA
+	 */
+	len = TLV_BODY_SIZE(&ext->header);
+	i = lsa->size - (OSPF_LSA_HEADER_SIZE + TLV_HDR_SIZE);
+	if (len != i || len <= 0) {
+		ote_debug("  |- Wrong TLV size: %u instead of %u",
+			  (uint32_t)len, (uint32_t)i);
+		return -1;
+	}
+
+	/* Initialize subTLVs browsing */
+	len -= EXT_TLV_LINK_SIZE;
 	tlvh = (struct tlv_header *)((char *)(ext) + TLV_HDR_SIZE
 				     + EXT_TLV_LINK_SIZE);
 	for (; sum < len; tlvh = TLV_HDR_NEXT(tlvh)) {
@@ -2749,6 +2800,8 @@ static int ospf_te_parse_ext_link(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 		switch (ntohs(tlvh->type)) {
 		case EXT_SUBTLV_ADJ_SID:
+			if (TLV_BODY_SIZE(tlvh) != EXT_SUBTLV_ADJ_SID_SIZE)
+				break;
 			adj = (struct ext_subtlv_adj_sid *)tlvh;
 			label = CHECK_FLAG(adj->flags,
 					   EXT_SUBTLV_LINK_ADJ_SID_VFLG)
@@ -2775,6 +2828,8 @@ static int ospf_te_parse_ext_link(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 			break;
 		case EXT_SUBTLV_LAN_ADJ_SID:
+			if (TLV_BODY_SIZE(tlvh) != EXT_SUBTLV_LAN_ADJ_SID_SIZE)
+				break;
 			ladj = (struct ext_subtlv_lan_adj_sid *)tlvh;
 			label = CHECK_FLAG(ladj->flags,
 					   EXT_SUBTLV_LINK_ADJ_SID_VFLG)
@@ -2804,6 +2859,8 @@ static int ospf_te_parse_ext_link(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 			break;
 		case EXT_SUBTLV_RMT_ITF_ADDR:
+			if (TLV_BODY_SIZE(tlvh) != EXT_SUBTLV_RMT_ITF_ADDR_SIZE)
+				break;
 			rmt = (struct ext_subtlv_rmt_itf_addr *)tlvh;
 			if (CHECK_FLAG(atr->flags, LS_ATTR_NEIGH_ADDR)
 			    && IPV4_ADDR_SAME(&atr->standard.remote,
@@ -2958,7 +3015,7 @@ static int ospf_te_delete_opaque_lsa(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 /**
  * Update Traffic Engineering Database Elements that correspond to the received
- * OSPF LSA. If LSA age is equal to MAX_AGE, call deletion function instead.
+ * OSPF LSA.
  *
  * @param lsa	OSPF Link State Advertisement
  *
@@ -2980,34 +3037,18 @@ static int ospf_mpls_te_lsa_update(struct ospf_lsa *lsa)
 		return -1;
 	}
 
-	/* If LSA is MAX_AGE, remove corresponding Link State element */
-	if (IS_LSA_MAXAGE(lsa)) {
-		switch (lsa->data->type) {
-		case OSPF_ROUTER_LSA:
-			rc = ospf_te_delete_router_lsa(OspfMplsTE.ted, lsa);
-			break;
-		case OSPF_OPAQUE_AREA_LSA:
-		case OSPF_OPAQUE_AS_LSA:
-			rc = ospf_te_delete_opaque_lsa(OspfMplsTE.ted, lsa);
-			break;
-		default:
-			rc = 0;
-			break;
-		}
-	} else {
-		/* Parse LSA to Update corresponding Link State element */
-		switch (lsa->data->type) {
-		case OSPF_ROUTER_LSA:
-			rc = ospf_te_parse_router_lsa(OspfMplsTE.ted, lsa);
-			break;
-		case OSPF_OPAQUE_AREA_LSA:
-		case OSPF_OPAQUE_AS_LSA:
-			rc = ospf_te_parse_opaque_lsa(OspfMplsTE.ted, lsa);
-			break;
-		default:
-			rc = 0;
-			break;
-		}
+	/* Parse LSA to Update corresponding Link State element */
+	switch (lsa->data->type) {
+	case OSPF_ROUTER_LSA:
+		rc = ospf_te_parse_router_lsa(OspfMplsTE.ted, lsa);
+		break;
+	case OSPF_OPAQUE_AREA_LSA:
+	case OSPF_OPAQUE_AS_LSA:
+		rc = ospf_te_parse_opaque_lsa(OspfMplsTE.ted, lsa);
+		break;
+	default:
+		rc = 0;
+		break;
 	}
 
 	return rc;
@@ -3038,19 +3079,6 @@ static int ospf_mpls_te_lsa_delete(struct ospf_lsa *lsa)
 			  __func__);
 		return -1;
 	}
-
-	/*
-	 * Process only self LSAs that reach MAX_AGE. Indeed, when the router
-	 * need to update or refresh an LSA, it first removes the old LSA from
-	 * the LSDB and then insert the new one. Thus, to avoid removing
-	 * corresponding Link State element and loosing some parameters
-	 * instead of just updating it, only self LSAs that reach MAX_AGE are
-	 * processed here. Other LSAs are processed by ospf_mpls_te_lsa_update()
-	 * and eventually removed when LSA age is MAX_AGE i.e. LSA is flushed
-	 * by the originator.
-	 */
-	if (!IS_LSA_SELF(lsa) || !IS_LSA_MAXAGE(lsa))
-		return 0;
 
 	/* Parse Link State information */
 	switch (lsa->data->type) {

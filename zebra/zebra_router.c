@@ -23,7 +23,6 @@ DEFINE_MTYPE_STATIC(ZEBRA, ZEBRA_RT_TABLE, "Zebra VRF table");
 
 struct zebra_router zrouter = {
 	.multipath_num = MULTIPATH_NUM,
-	.ipv4_multicast_mode = MCAST_NO_CONFIG,
 };
 
 static inline int
@@ -221,24 +220,11 @@ uint32_t zebra_router_get_next_sequence(void)
 					   memory_order_relaxed);
 }
 
-void multicast_mode_ipv4_set(enum multicast_mode mode)
-{
-	if (IS_ZEBRA_DEBUG_RIB)
-		zlog_debug("%s: multicast lookup mode set (%d)", __func__,
-			   mode);
-	zrouter.ipv4_multicast_mode = mode;
-}
-
-enum multicast_mode multicast_mode_ipv4_get(void)
-{
-	return zrouter.ipv4_multicast_mode;
-}
-
 void zebra_router_terminate(void)
 {
 	struct zebra_router_table *zrt, *tmp;
 
-	EVENT_OFF(zrouter.sweeper);
+	EVENT_OFF(zrouter.t_rib_sweep);
 
 	RB_FOREACH_SAFE (zrt, zebra_router_table_head, &zrouter.tables, tmp)
 		zebra_router_free_table(zrt);
@@ -343,7 +329,7 @@ void zebra_router_init(bool asic_offload, bool notify_on_ack,
 #endif
 	zrouter.asic_notification_nexthop_control = false;
 
-	zrouter.nexthop_weight_scale_value = 255;
+	zrouter.nexthop_weight_scale_value = 254;
 
 #ifdef HAVE_SCRIPTING
 	zebra_script_init();

@@ -14,6 +14,7 @@
 #include "printfrr.h"
 #include "zebra/zebra_vxlan.h"
 #include "zebra/zebra_vxlan_if.h"
+#include "zebra/ipforward.h"
 
 /*
  * XPath: /frr-interface:lib/interface/frr-zebra:zebra/state/up-count
@@ -49,8 +50,53 @@ lib_interface_zebra_state_down_count_get_elem(struct nb_cb_get_elem_args *args)
 struct yang_data *
 lib_interface_zebra_state_zif_type_get_elem(struct nb_cb_get_elem_args *args)
 {
-	/* TODO: implement me. */
-	return NULL;
+	const struct interface *ifp = args->list_entry;
+	struct zebra_if *zebra_if;
+	const char *type = NULL;
+
+	zebra_if = ifp->info;
+
+	/*
+	 * NOTE: when adding a new type to the switch, make sure it is defined
+	 * in it's YANG model.
+	 */
+	switch (zebra_if->zif_type) {
+	case ZEBRA_IF_OTHER:
+		type = "frr-zebra:zif-other";
+		break;
+	case ZEBRA_IF_VXLAN:
+		type = "frr-zebra:zif-vxlan";
+		break;
+	case ZEBRA_IF_VRF:
+		type = "frr-zebra:zif-vrf";
+		break;
+	case ZEBRA_IF_BRIDGE:
+		type = "frr-zebra:zif-bridge";
+		break;
+	case ZEBRA_IF_VLAN:
+		type = "frr-zebra:zif-vlan";
+		break;
+	case ZEBRA_IF_MACVLAN:
+		type = "frr-zebra:zif-macvlan";
+		break;
+	case ZEBRA_IF_VETH:
+		type = "frr-zebra:zif-veth";
+		break;
+	case ZEBRA_IF_BOND:
+		type = "frr-zebra:zif-bond";
+		break;
+	case ZEBRA_IF_GRE:
+		type = "frr-zebra:zif-gre";
+		break;
+	case ZEBRA_IF_DUMMY:
+		type = "frr-zebra:zif-dummy";
+		break;
+	}
+
+	if (!type)
+		return NULL;
+
+	return yang_data_new_string(args->xpath, type);
 }
 
 /*
@@ -143,6 +189,28 @@ lib_interface_zebra_state_mcast_group_get_elem(struct nb_cb_get_elem_args *args)
 
 	vni = zebra_vxlan_if_vni_find(zebra_if, 0);
 	return yang_data_new_ipv4(args->xpath, &vni->mcast_grp);
+}
+
+/*
+ * XPath: /frr-interface:lib/interface/frr-zebra:zebra/state/bond
+ */
+struct yang_data *
+lib_interface_zebra_state_bond_get_elem(struct nb_cb_get_elem_args *args)
+{
+	const struct interface *ifp = args->list_entry;
+	struct zebra_if *zebra_if;
+	struct interface *bond;
+
+	if (!IS_ZEBRA_IF_BOND_SLAVE(ifp))
+		return NULL;
+
+	zebra_if = ifp->info;
+	bond = zebra_if->bondslave_info.bond_if;
+
+	if (!bond)
+		return NULL;
+
+	return yang_data_new_string(args->xpath, bond->name);
 }
 
 const void *lib_vrf_zebra_ribs_rib_get_next(struct nb_cb_get_next_args *args)
@@ -548,7 +616,7 @@ struct yang_data *lib_vrf_zebra_ribs_rib_route_route_entry_uptime_get_elem(
 {
 	struct route_entry *re = (struct route_entry *)args->list_entry;
 
-	return yang_data_new_date_and_time(args->xpath, re->uptime);
+	return yang_data_new_date_and_time(args->xpath, re->uptime, true);
 }
 
 /*
@@ -836,6 +904,7 @@ lib_vrf_zebra_ribs_rib_route_route_entry_nexthop_group_nexthop_bh_type_get_elem(
 	if (nexthop->type != NEXTHOP_TYPE_BLACKHOLE)
 		return NULL;
 
+	(void)type_str; /* clang-SA */
 	switch (nexthop->bh_type) {
 	case BLACKHOLE_NULL:
 		type_str = "null";
@@ -1091,4 +1160,32 @@ lib_vrf_zebra_ribs_rib_route_route_entry_nexthop_group_nexthop_weight_get_elem(
 		return yang_data_new_uint8(args->xpath, nexthop->weight);
 
 	return NULL;
+}
+
+/*
+ * XPath:
+ * /frr-zebra:zebra/max-multipath
+ */
+struct yang_data *zebra_max_multipath_get_elem(struct nb_cb_get_elem_args *args)
+{
+	return yang_data_new_uint16(args->xpath, zrouter.multipath_num);
+}
+
+/*
+ * XPath:
+ * /frr-zebra:zebra/ip_forwarding
+ */
+struct yang_data *zebra_ip_forwarding_get_elem(struct nb_cb_get_elem_args *args)
+{
+	return yang_data_new_bool(args->xpath, ipforward());
+}
+
+
+/*
+ * XPath:
+ *  /frr-zebra:zebra/ipv6_forwarding
+ */
+struct yang_data *zebra_ipv6_forwarding_get_elem(struct nb_cb_get_elem_args *args)
+{
+	return yang_data_new_bool(args->xpath, ipforward_ipv6());
 }

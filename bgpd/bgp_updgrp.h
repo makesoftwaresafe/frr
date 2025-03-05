@@ -66,7 +66,6 @@ typedef struct {
 
 #define BPKT_ATTRVEC_FLAGS_UPDATED        (1 << 0)
 #define BPKT_ATTRVEC_FLAGS_RMAP_NH_PEER_ADDRESS   (1 << 1)
-#define BPKT_ATTRVEC_FLAGS_REFLECTED (1 << 2)
 #define BPKT_ATTRVEC_FLAGS_RMAP_NH_UNCHANGED   (1 << 3)
 #define BPKT_ATTRVEC_FLAGS_RMAP_IPV4_NH_CHANGED   (1 << 4)
 #define BPKT_ATTRVEC_FLAGS_RMAP_IPV6_GNH_CHANGED  (1 << 5)
@@ -369,7 +368,6 @@ extern void update_group_policy_update(struct bgp *bgp,
 extern void update_group_af_walk(struct bgp *bgp, afi_t afi, safi_t safi,
 				 updgrp_walkcb cb, void *ctx);
 extern void update_group_walk(struct bgp *bgp, updgrp_walkcb cb, void *ctx);
-extern void update_group_periodic_merge(struct bgp *bgp);
 extern void
 update_group_refresh_default_originate_route_map(struct event *thread);
 extern void update_group_start_advtimer(struct bgp *bgp);
@@ -441,7 +439,7 @@ extern struct bgp_adj_out *bgp_adj_out_alloc(struct update_subgroup *subgrp,
 extern void bgp_adj_out_remove_subgroup(struct bgp_dest *dest,
 					struct bgp_adj_out *adj,
 					struct update_subgroup *subgrp);
-extern void bgp_adj_out_set_subgroup(struct bgp_dest *dest,
+extern bool bgp_adj_out_set_subgroup(struct bgp_dest *dest,
 				     struct update_subgroup *subgrp,
 				     struct attr *attr,
 				     struct bgp_path_info *path);

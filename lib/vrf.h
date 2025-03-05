@@ -80,6 +80,8 @@ struct vrf {
 	/* Back pointer to namespace context */
 	void *ns_ctxt;
 
+	struct lyd_node *state;
+
 	QOBJ_FIELDS;
 };
 RB_HEAD(vrf_id_head, vrf);
@@ -92,7 +94,6 @@ DECLARE_QOBJ_TYPE(vrf);
 enum vrf_backend_type {
 	VRF_BACKEND_VRF_LITE,
 	VRF_BACKEND_NETNS,
-	VRF_BACKEND_UNKNOWN,
 	VRF_BACKEND_MAX,
 };
 
@@ -202,6 +203,12 @@ extern void vrf_init(int (*create)(struct vrf *vrf),
 		     int (*destroy)(struct vrf *vrf));
 
 /*
+ * Iterate over custom VRFs and round up by processing the default VRF.
+ */
+typedef void (*vrf_iter_func)(struct vrf *vrf);
+extern void vrf_iterate(vrf_iter_func fnc);
+
+/*
  * Call vrf_terminate when the protocol is being shutdown
  */
 extern void vrf_terminate(void);
@@ -293,6 +300,7 @@ extern void vrf_disable(struct vrf *vrf);
 extern int vrf_enable(struct vrf *vrf);
 extern void vrf_delete(struct vrf *vrf);
 
+extern bool vrf_notify_oper_changes;
 extern const struct frr_yang_module_info frr_vrf_info;
 extern const struct frr_yang_module_info frr_vrf_cli_info;
 

@@ -9,8 +9,10 @@
 #include <zebra.h>
 #include <lib/version.h>
 #include "darr.h"
+#include "debug.h"
 #include "libfrr.h"
 #include "mgmt_be_client.h"
+#include "mgmt_msg_native.h"
 #include "northbound.h"
 
 /* ---------------- */
@@ -18,6 +20,7 @@
 /* ---------------- */
 
 static void async_notification(struct nb_cb_notify_args *args);
+static int rpc_callback(struct nb_cb_rpc_args *args);
 
 static void sigusr1(void);
 static void sigint(void);
@@ -42,15 +45,15 @@ struct zebra_privs_t __privs = {
 	.cap_num_i = 0,
 };
 
-#define OPTION_LISTEN	   2000
-#define OPTION_NOTIF_COUNT 2001
-#define OPTION_TIMEOUT	   2002
-const struct option longopts[] = {
-	{ "listen", no_argument, NULL, OPTION_LISTEN },
-	{ "notif-count", required_argument, NULL, OPTION_NOTIF_COUNT },
-	{ "timeout", required_argument, NULL, OPTION_TIMEOUT },
-	{ 0 }
-};
+#define OPTION_DATASTORE   2000
+#define OPTION_LISTEN	   2001
+#define OPTION_NOTIF_COUNT 2002
+#define OPTION_TIMEOUT	   2003
+const struct option longopts[] = { { "datastore", no_argument, NULL, OPTION_DATASTORE },
+				   { "listen", no_argument, NULL, OPTION_LISTEN },
+				   { "notify-count", required_argument, NULL, OPTION_NOTIF_COUNT },
+				   { "timeout", required_argument, NULL, OPTION_TIMEOUT },
+				   { 0 } };
 
 
 /* Master of threads. */
@@ -78,6 +81,20 @@ struct frr_signal_t __signals[] = {
 #define MGMTD_TESTC_VTY_PORT 2624
 
 /* clang-format off */
+static const struct frr_yang_module_info frr_if_info = {
+	.name = "frr-interface",
+	.ignore_cfg_cbs = true,
+	.nodes = {
+		{
+			.xpath = "/frr-interface:lib/interface",
+			.cbs.notify = async_notification,
+		},
+		{
+			.xpath = NULL,
+		}
+	}
+};
+
 static const struct frr_yang_module_info frr_ripd_info = {
 	.name = "frr-ripd",
 	.ignore_cfg_cbs = true,
@@ -87,12 +104,18 @@ static const struct frr_yang_module_info frr_ripd_info = {
 			.cbs.notify = async_notification,
 		},
 		{
+			.xpath = "/frr-ripd:clear-rip-route",
+			.cbs.rpc = rpc_callback,
+		},
+		{
 			.xpath = NULL,
 		}
 	}
 };
 
 static const struct frr_yang_module_info *const mgmt_yang_modules[] = {
+	&frr_backend_info,
+	&frr_if_info,
 	&frr_ripd_info,
 };
 
@@ -113,10 +136,12 @@ FRR_DAEMON_INFO(mgmtd_testc, MGMTD_TESTC,
 /* clang-format on */
 
 const char **__notif_xpaths;
+const char **__rpc_xpaths;
 
 struct mgmt_be_client_cbs __client_cbs = {};
 struct event *event_timeout;
 
+int f_datastore;
 int o_notif_count = 1;
 int o_timeout;
 
@@ -133,8 +158,11 @@ static void sigusr1(void)
 static void quit(int exit_code)
 {
 	EVENT_OFF(event_timeout);
-	frr_fini();
 	darr_free(__client_cbs.notif_xpaths);
+	darr_free(__client_cbs.rpc_xpaths);
+
+	frr_fini();
+
 	exit(exit_code);
 }
 
@@ -150,15 +178,92 @@ static void timeout(struct event *event)
 	quit(1);
 }
 
-static void async_notification(struct nb_cb_notify_args *args)
+static void success(struct event *event)
 {
-	zlog_notice("Received YANG notification");
+	zlog_notice("Success, exiting");
+	quit(0);
+}
 
+static void __ds_notification(struct nb_cb_notify_args *args)
+{
+	uint8_t *output = NULL;
+
+	zlog_notice("Received YANG datastore notification: op %u", args->op);
+
+	if (args->op == NOTIFY_OP_NOTIFICATION) {
+		zlog_warn("ignoring non-datastore op notification: %s", args->xpath);
+		return;
+	}
+
+	/* datastore notification */
+	switch (args->op) {
+	case NOTIFY_OP_DS_REPLACE:
+		printfrr("#OP=REPLACE: %s\n", args->xpath);
+		break;
+	case NOTIFY_OP_DS_DELETE:
+		printfrr("#OP=DELETE: %s\n", args->xpath);
+		break;
+	case NOTIFY_OP_DS_PATCH:
+		printfrr("#OP=PATCH: %s\n", args->xpath);
+		break;
+	default:
+		printfrr("#OP=%u: unknown notify op\n", args->op);
+		quit(1);
+	}
+
+	if (args->dnode && args->op != NOTIFY_OP_DS_DELETE) {
+		output = yang_print_tree(args->dnode, LYD_JSON, LYD_PRINT_SHRINK);
+		if (output) {
+			printfrr("%s\n", output);
+			darr_free(output);
+		}
+	}
+	fflush(stdout);
+
+	if (o_notif_count && !--o_notif_count)
+		quit(0);
+}
+
+static void __notification(struct nb_cb_notify_args *args)
+{
+	zlog_notice("Received YANG notification: op: %u", args->op);
+
+	if (args->op != NOTIFY_OP_NOTIFICATION) {
+		zlog_warn("ignoring datastore notification: op: %u: path %s", args->op, args->xpath);
+		return;
+	}
+
+	/* bogus, we should print the actual data */
 	printf("{\"frr-ripd:authentication-failure\": {\"interface-name\": \"%s\"}}\n",
 	       yang_dnode_get_string(args->dnode, "interface-name"));
 
 	if (o_notif_count && !--o_notif_count)
 		quit(0);
+}
+
+static void async_notification(struct nb_cb_notify_args *args)
+{
+	if (f_datastore)
+		__ds_notification(args);
+	else
+		__notification(args);
+}
+
+static int rpc_callback(struct nb_cb_rpc_args *args)
+{
+	const char *vrf = NULL;
+
+	zlog_notice("Received YANG RPC");
+
+	if (yang_dnode_exists(args->input, "vrf"))
+		vrf = yang_dnode_get_string(args->input, "vrf");
+
+	printf("{\"frr-ripd:clear-rip-route\": {\"vrf\": \"%s\"}}\n", vrf);
+
+	event_cancel(&event_timeout);
+	event_add_timer(master, success, NULL, 1, NULL);
+
+	return 0;
 }
 
 int main(int argc, char **argv)
@@ -178,6 +283,9 @@ int main(int argc, char **argv)
 			break;
 
 		switch (opt) {
+		case OPTION_DATASTORE:
+			f_datastore = 1;
+			break;
 		case OPTION_LISTEN:
 			f_listen = 1;
 			break;
@@ -195,6 +303,9 @@ int main(int argc, char **argv)
 	}
 
 	master = frr_init();
+
+	mgmt_be_client_lib_vty_init();
+	mgmt_dbg_be_client.flags = DEBUG_MODE_ALL;
 
 	/*
 	 * Setup notification listen
@@ -214,6 +325,10 @@ int main(int argc, char **argv)
 		__client_cbs.notif_xpaths = __notif_xpaths;
 		__client_cbs.nnotif_xpaths = darr_len(__notif_xpaths);
 	}
+
+	darr_push(__rpc_xpaths, "/frr-ripd:clear-rip-route");
+	__client_cbs.rpc_xpaths = __rpc_xpaths;
+	__client_cbs.nrpc_xpaths = darr_len(__rpc_xpaths);
 
 	mgmt_be_client = mgmt_be_client_create("mgmtd-testc", &__client_cbs, 0,
 					       master);

@@ -109,12 +109,12 @@ static void pim_reg_stop_upstream(struct pim_instance *pim,
 		up->reg_state = PIM_REG_PRUNE;
 		pim_channel_del_oif(up->channel_oil, pim->regiface,
 				    PIM_OIF_FLAG_PROTO_PIM, __func__);
-		pim_upstream_start_register_stop_timer(up, 0);
+		pim_upstream_start_register_probe_timer(up);
 		pim_vxlan_update_sg_reg_state(pim, up, false);
 		break;
 	case PIM_REG_JOIN_PENDING:
 		up->reg_state = PIM_REG_PRUNE;
-		pim_upstream_start_register_stop_timer(up, 0);
+		pim_upstream_start_register_probe_timer(up);
 		return;
 	}
 }
@@ -186,8 +186,9 @@ int pim_register_stop_recv(struct interface *ifp, uint8_t *buf, int buf_size)
 		 */
 		for (ALL_LIST_ELEMENTS_RO(up->sources, up_node, child)) {
 			if (PIM_DEBUG_PIM_REG)
-				zlog_debug("Executing Reg stop for %s",
-					   child->sg_str);
+				zlog_debug(
+					"Executing Reg stop for upstream child %s",
+					child->sg_str);
 
 			pim_reg_stop_upstream(pim, child);
 		}
@@ -208,8 +209,9 @@ int pim_register_stop_recv(struct interface *ifp, uint8_t *buf, int buf_size)
 		frr_each (rb_pim_upstream, &pim->upstream_head, up) {
 			if (pim_addr_cmp(up->sg.grp, sg.grp) == 0) {
 				if (PIM_DEBUG_PIM_REG)
-					zlog_debug("Executing Reg stop for %s",
-						   up->sg_str);
+					zlog_debug(
+						"Executing Reg stop for upstream %s",
+						up->sg_str);
 				pim_reg_stop_upstream(pim, up);
 			}
 		}
@@ -682,9 +684,12 @@ int pim_register_recv(struct interface *ifp, pim_addr dest_addr,
 			}
 		}
 
-		if ((upstream->sptbit == PIM_UPSTREAM_SPTBIT_TRUE)
-		    || ((SwitchToSptDesiredOnRp(pim, &sg))
-			&& pim_upstream_inherited_olist(pim, upstream) == 0)) {
+		if ((upstream->sptbit == PIM_UPSTREAM_SPTBIT_TRUE) ||
+		    (PIM_UPSTREAM_FLAG_TEST_FHR(upstream->flags) && i_am_rp) ||
+		    ((SwitchToSptDesiredOnRp(pim, &sg)) &&
+		     pim_upstream_inherited_olist(pim, upstream) == 0)) {
+			zlog_debug("sending pim register stop message :  %s ",
+				   upstream->sg_str);
 			pim_register_stop_send(ifp, &sg, dest_addr, src_addr);
 			sentRegisterStop = 1;
 		} else {
@@ -709,7 +714,10 @@ int pim_register_recv(struct interface *ifp, pim_addr dest_addr,
 			// inherited_olist(S,G,rpt)
 			// This is taken care of by the kernel for us
 		}
+
+#if PIM_IPV == 4
 		pim_upstream_msdp_reg_timer_start(upstream);
+#endif /* PIM_IPV == 4 */
 	} else {
 		if (PIM_DEBUG_PIM_REG) {
 			if (!i_am_rp)

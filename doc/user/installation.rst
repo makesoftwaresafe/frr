@@ -3,22 +3,25 @@
    single: Installing FRR
    single: Building FRR
 
-.. _installation:
-
 Installation
 ============
 
-This section covers the basics of building, installing and setting up FRR.
+This section covers the basics of building, installing and setting up
+FRR.
 
+The official FRR website is located at |PACKAGE_URL| and contains further
+information, as well as links to additional resources.
 
 From Packages
 -------------
 
-The project publishes packages for Red Hat, Centos, Debian and Ubuntu on the
-`GitHub releases <https://github.com/FRRouting/frr/releases>`_. page. External
-contributors offer packages for many other platforms including \*BSD, Alpine,
-Gentoo, Docker, and others. There is currently no documentation on how to use
-those but we hope to add it soon.
+Up-to-date Debian & Redhat packages are available at
+https://deb.frrouting.org/ & https://rpm.frrouting.org/ respectively.
+
+Several distributions also provide packages for FRR. Check your
+distribution's repositories to find out if a suitable version is
+available.
+
 
 From Snapcraft
 --------------
@@ -29,12 +32,12 @@ universal Snap images, available at https://snapcraft.io/frr.
 From Source
 -----------
 
-Building FRR from source is the best way to ensure you have the latest features
-and bug fixes. Details for each supported platform, including dependency
-package listings, permissions, and other gotchas, are in the `developer's
-documentation
-<http://docs.frrouting.org/projects/dev-guide/en/latest/building.html>`_. This
-section provides a brief overview on the process.
+Building FRR from source is the best way to ensure you have the latest
+features and bug fixes. Details for each supported platform, including
+dependency package listings, permissions, and other gotchas, are in the
+`developer's documentation
+<http://docs.frrouting.org/projects/dev-guide/en/latest/building.html>`_.
+This section provides a brief overview on the process.
 
 
 Getting the Source
@@ -274,6 +277,10 @@ options from the list below.
 
    Build with FPM module support.
 
+.. option:: --enable-fpm-listener
+
+   Build a small fpm listener for testing.
+
 .. option:: --with-service-timeout=X
 
    Set timeout value for FRR service. The time of restarting or reloading FRR
@@ -321,11 +328,6 @@ options from the list below.
 .. option:: --enable-config-rollbacks
 
    Build with configuration rollback support. Requires SQLite3.
-
-.. option:: --enable-confd=<dir>
-
-   Build the ConfD northbound plugin. Look for the libconfd libs and headers
-   in `dir`.
 
 .. option:: --enable-sysrepo
 
@@ -423,7 +425,12 @@ options to the configuration script.
 Python dependency, documentation and tests
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-FRR's documentation and basic unit tests heavily use code written in Python.
+FRR uses Python for these components:
+
+* configuration reloading (see :ref:`FRR-RELOAD <frr-reload>` for details),
+* documentation,
+* unit tests.
+
 Additionally, FRR ships Python extensions written in C which are used during
 its build process.
 

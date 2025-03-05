@@ -145,57 +145,16 @@ module frr-zebra {
       "Zebra interface type bond.";
   }
 
-  identity zif-bond-slave {
-    base zebra-interface-type;
-    description
-      "Zebra interface type bond slave.";
-  }
-
   identity zif-macvlan {
     base zebra-interface-type;
     description
       "Zebra interface type macvlan.";
   }
 
-  /*
-   * Multicast RPF mode configurable type
-   */
-
-  typedef mcast-rpf-lookup-mode {
-    type enumeration {
-      enum "none" {
-        value 0;
-        description
-          "No mode set.";
-      }
-      enum "mrib-only" {
-        value 1;
-        description
-          "Lookup in unicast RIB only.";
-      }
-      enum "urib-only" {
-        value 2;
-        description
-          "Lookup in multicast RIB only.";
-      }
-      enum "mrib-then-urib" {
-        value 3;
-        description
-          "Try multicast RIB first, fall back to unicast RIB.";
-      }
-      enum "lower-distance" {
-        value 4;
-        description
-          "Lookup both unicast and mcast, use entry with lower distance.";
-      }
-      enum "longer-prefix" {
-        value 5;
-        description
-          "Lookup both unicast and mcast, use entry with longer prefix.";
-      }
-    }
+  identity zif-gre {
+    base zebra-interface-type;
     description
-      "Multicast RPF lookup behavior";
+      "Zebra interface type gre.";
   }
 
   // End of ip6-route
@@ -626,6 +585,7 @@ module frr-zebra {
 
         leaf table-id {
           type uint32;
+	  default "254";
           description
             "Routing Table id (default id - 254).";
         }
@@ -2733,6 +2693,12 @@ module frr-zebra {
           description
             "The VNI multicast group for BUM traffic.";
         }
+
+        leaf bond {
+          type frr-interface:interface-ref;
+          description
+            "The bond interface this interface belongs to.";
+        }
       }
     }
   }
@@ -2849,6 +2815,16 @@ module frr-zebra {
         }
       }
 
+      container mpls {
+        description
+          "MPLS Configuration.";
+          leaf fec-nexthop-resolution {
+            type boolean;
+            description
+              "Authorise nexthop resolution over all labeled routes.";
+          }
+      }
+
       uses ribs;
 
       uses vrf-vni-mapping;
@@ -2866,11 +2842,16 @@ module frr-zebra {
   container zebra {
     description
       "Data model for the Zebra daemon.";
-    leaf mcast-rpf-lookup {
-      type frr-zebra:mcast-rpf-lookup-mode;
-      default "mrib-then-urib";
+    leaf max-multipath {
+      config false;
+      type uint16 {
+        range "1..65535";
+      }
       description
-        "Multicast RPF lookup behavior.";
+        "The maximum number of nexthops for a route.  At this point it
+         is unlikely that a multipath number will ever get larger then
+         1024 but to allow for future expansions, the yang returns a
+         16 bit number";
     }
     leaf ip-forwarding {
       type boolean;
@@ -2878,24 +2859,8 @@ module frr-zebra {
         "IP forwarding status.";
     }
     leaf ipv6-forwarding {
-      type enumeration {
-        enum unknown {
-          value -1;
-          description
-            "Unknown state.";
-        }
-        enum off {
-          value 0;
-          description
-            "IPv6 forwarding disabled.";
-        }
-        enum on {
-          value 1;
-          description
-            "IPv6 forwarding enabled.";
-        }
-      }
-      description
+      type boolean;
+       description
         "IPv6 forwarding status.";
     }
     leaf workqueue-hold-timer {
@@ -2987,6 +2952,16 @@ module frr-zebra {
       config false;
       description
         "Operational data.";
+      leaf ip-forwarding {
+        type boolean;
+        description
+          "IP forwarding status.";
+      }
+      leaf ipv6-forwarding {
+        type boolean;
+        description
+          "IPv6 forwarding status.";
+      }   
     }
     // End of operational / state container
   }

@@ -23,6 +23,7 @@
 #include "privs.h"
 #include "sigevent.h"
 #include "libfrr.h"
+#include "zlog_live.h"
 
 static void	 ldpe_shutdown(void);
 static void ldpe_dispatch_main(struct event *thread);
@@ -93,6 +94,8 @@ char *pkt_ptr; /* packet buffer */
 void
 ldpe(void)
 {
+	static struct zlog_live_cfg child_log;
+
 #ifdef HAVE_SETPROCTITLE
 	setproctitle("ldp engine");
 #endif
@@ -100,6 +103,8 @@ ldpe(void)
 	log_procname = log_procnames[ldpd_process];
 
 	master = frr_init();
+	zlog_live_open_fd(&child_log, LOG_DEBUG, LDPD_FD_LOG);
+
 	/* no frr_config_fork() here, allow frr_pthread to create threads */
 	frr_is_after_fork = true;
 
@@ -454,6 +459,8 @@ static void ldpe_dispatch_main(struct event *thread)
 			tnbr_update_all(AF_UNSPEC);
 			break;
 		case IMSG_RECONF_CONF:
+			if (nconf)
+				ldp_clear_config(nconf);
 			if ((nconf = malloc(sizeof(struct ldpd_conf))) == NULL)
 				fatal(NULL);
 			memcpy(nconf, imsg.data, sizeof(struct ldpd_conf));

@@ -83,6 +83,11 @@ void cli_show_router_ripng(struct vty *vty, const struct lyd_node *dnode,
 	vty_out(vty, "\n");
 }
 
+void cli_show_end_router_ripng(struct vty *vty, const struct lyd_node *dnode)
+{
+	vty_out(vty, "exit\n");
+}
+
 /*
  * XPath: /frr-ripngd:ripngd/instance/allow-ecmp
  */
@@ -507,36 +512,6 @@ void cli_show_ipv6_ripng_split_horizon(struct vty *vty,
 	}
 }
 
-/*
- * XPath: /frr-ripngd:clear-ripng-route
- */
-DEFPY_YANG (clear_ipv6_rip,
-       clear_ipv6_rip_cmd,
-       "clear ipv6 ripng [vrf WORD]",
-       CLEAR_STR
-       IPV6_STR
-       "Clear IPv6 RIP database\n"
-       VRF_CMD_HELP_STR)
-{
-	struct list *input;
-	int ret;
-
-	input = list_new();
-	if (vrf) {
-		struct yang_data *yang_vrf;
-
-		yang_vrf = yang_data_new(
-			"/frr-ripngd:clear-ripng-route/input/vrf", vrf);
-		listnode_add(input, yang_vrf);
-	}
-
-	ret = nb_cli_rpc(vty, "/frr-ripngd:clear-ripng-route", input, NULL);
-
-	list_delete(&input);
-
-	return ret;
-}
-
 DEFPY_YANG(
 	ripng_ipv6_distribute_list, ripng_ipv6_distribute_list_cmd,
 	"ipv6 distribute-list ACCESSLIST6_NAME$name <in|out>$dir [WORD$ifname]",
@@ -649,6 +624,23 @@ DEFPY_YANG(no_ripng_ipv6_distribute_list_prefix,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
+/*
+ * XPath: /frr-ripngd:clear-ripng-route
+ */
+DEFPY_YANG (clear_ipv6_rip,
+       clear_ipv6_rip_cmd,
+       "clear ipv6 ripng [vrf WORD]",
+       CLEAR_STR
+       IPV6_STR
+       "Clear IPv6 RIP database\n"
+       VRF_CMD_HELP_STR)
+{
+	if (vrf)
+		nb_cli_rpc_enqueue(vty, "vrf", vrf);
+
+	return nb_cli_rpc(vty, "/frr-ripngd:clear-ripng-route", NULL);
+}
+
 /* RIPng node structure. */
 static struct cmd_node cmd_ripng_node = {
 	.name = "ripng",
@@ -701,6 +693,7 @@ const struct frr_yang_module_info frr_ripngd_cli_info = {
 		{
 			.xpath = "/frr-ripngd:ripngd/instance",
 			.cbs.cli_show = cli_show_router_ripng,
+			.cbs.cli_show_end = cli_show_end_router_ripng,
 		},
 		{
 			.xpath = "/frr-ripngd:ripngd/instance/allow-ecmp",
