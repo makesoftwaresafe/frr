@@ -21,6 +21,9 @@ struct zebra_neigh_ent {
 
 	struct ethaddr mac;
 
+	/* State as received from the kernel */
+	uint16_t neigh_state;
+
 	uint32_t flags;
 #define ZEBRA_NEIGH_ENT_ACTIVE (1 << 0) /* can be used for traffic */
 
@@ -40,11 +43,11 @@ struct zebra_neigh_info {
 
 
 /****************************************************************************/
-extern void zebra_neigh_add(struct interface *ifp, struct ipaddr *ip,
-			    struct ethaddr *mac);
+extern void zebra_neigh_add(struct interface *ifp, struct ipaddr *ip, struct ethaddr *mac,
+			    uint16_t ndm_state);
 extern void zebra_neigh_del(struct interface *ifp, struct ipaddr *ip);
 extern void zebra_neigh_del_all(struct interface *ifp);
-extern void zebra_neigh_show(struct vty *vty);
+extern void zebra_neigh_show(struct vty *vty, enum ipaddr_type_t afi, bool use_json);
 extern void zebra_neigh_init(void);
 extern void zebra_neigh_terminate(void);
 extern void zebra_neigh_deref(struct zebra_pbr_rule *rule);
