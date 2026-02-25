@@ -4923,6 +4923,9 @@ static void bgp_may_stop_listening(struct bgp *bgp, struct vty *vty)
 	struct vrf *vrf;
 	afi_t afi;
 
+	if (bgp->inst_type == BGP_INSTANCE_TYPE_DEFAULT)
+		return;
+
 	for (ALL_LIST_ELEMENTS(bgp->group, node, nnode, group)) {
 		for (afi = AFI_IP; afi < AFI_MAX; afi++) {
 			if (!list_isempty(group->listen_range[afi]))
@@ -5415,6 +5418,9 @@ static int peer_conf_interface_get(struct vty *vty, const char *conf_if,
 
 		ret = peer_group_bind(bgp, NULL, peer, group, &as);
 	}
+
+	/* if need start listening */
+	bgp_need_listening(bgp, vty);
 
 	return bgp_vty_return(vty, ret);
 }
